@@ -3,12 +3,13 @@ import type { FormEvent } from 'react'
 import { api } from './services/api'
 import type { Shipment, Detail, Route, Event, Prediction, Check, PredictionContext } from './services/api'
 import { buildPredictionRequest, validatePrediction } from './services/prediction'
+import { RouteMap } from './RouteMap'
 import './App.css'
 
 const labels: Record<string, string> = {pending:'Ожидает', in_transit:'В пути', completed:'Завершён', not_submitted:'Не отправлены', submitted:'Отправлены', approved:'Приняты', rejected:'Отклонены', low:'Низкий', medium:'Средний', high:'Высокий', prediction_updated:'Обновлён прогноз'}
 const pages = [
   { id: 'monitor', title: 'Мониторинг', hint: 'Этапы, ETA и маршруты', icon: '▦' },
-  { id: 'scenario', title: 'AI-прогноз', hint: 'Gemini · анализ условий', icon: '↗' },
+  { id: 'scenario', title: 'Сценарии задержек', hint: 'Случайная задержка и причина', icon: '↗' },
   { id: 'sources', title: 'Источники', hint: 'Сводки и происхождение данных', icon: '◈' },
   { id: 'documents', title: 'Документы', hint: 'Проверка комплектности', icon: '▤' },
   { id: 'events', title: 'Журнал', hint: 'События выбранного груза', icon: '◷' },
@@ -17,7 +18,7 @@ const message = (error: unknown) => error instanceof Error ? error.message : 'Н
 const hours = (value: number) => `${value.toLocaleString('ru-RU', {maximumFractionDigits: 1})} ч`
 type Forecast = {result: Prediction; request: Record<string, string | number>; baseline: Route[]}
 
-function RouteComparison({routes, baseline}: {routes: Route[]; baseline?: Route[]}) {
+function RouteComparison({routes, baseline, selected, onSelect}: {routes: Route[]; baseline?: Route[]; selected: string; onSelect: (id: string) => void}) {
   return <div className="route-grid">{routes.map(route => {
     const before = baseline?.find(item => item.route_id === route.route_id)
     const delta = before ? Math.round((route.eta_hours - before.eta_hours) * 10) / 10 : null
@@ -29,7 +30,7 @@ function RouteComparison({routes, baseline}: {routes: Route[]; baseline?: Route[
         {before && <div><dt>До расчёта</dt><dd>{hours(before.eta_hours)}</dd></div>}
         {delta !== null && <div><dt>Изменение ETA</dt><dd>{delta > 0 ? '+' : ''}{hours(delta)}</dd></div>}
         <div><dt>Выбросы CO₂e</dt><dd>{route.co2_kg.toLocaleString('ru-RU')} кг</dd></div>
-      </dl><p>{route.reason}</p>
+      </dl><p>{route.reason}</p><button type="button" aria-pressed={selected === route.route_id} onClick={() => onSelect(route.route_id)}>{selected === route.route_id ? 'Выбран на карте' : 'Показать на карте'}</button>
     </article>
   })}</div>
 }
@@ -137,7 +138,7 @@ function App() {
   }
   const visible = shipments.filter(item => (filter === 'all' || item.status === filter) && `${item.id} ${item.name} ${item.origin} ${item.destination}`.toLowerCase().includes(search.toLowerCase()))
   const currentPage = pages.find(item => item.id === page)!
-  const changed = forecast && (forecast.request.route_id !== routeId || forecast.result.source_snapshot_id !== context?.snapshot_id)
+  const changed = forecast && forecast.request.route_id !== routeId
   const result = forecast?.result
 
   return <div className="shell">
@@ -146,12 +147,12 @@ function App() {
       <div className="nav-caption">УПРАВЛЕНИЕ КОРИДОРОМ</div>
       <nav aria-label="Основная навигация">{pages.map((item, index) => <button key={item.id} className={page === item.id ? 'nav active' : 'nav'} aria-current={page === item.id ? 'page' : undefined} onClick={() => setPage(item.id)}><span aria-hidden="true">{item.icon}</span><span className="nav-label">{item.title}<small>{item.hint}</small></span><span className="nav-number">0{index + 1}</span></button>)}</nav>
       <div className="sidebar-context"><span className="nav-caption">В РАБОТЕ</span><strong>{selected || 'Груз не выбран'}</strong><p>{detail ? `${detail.origin} → ${detail.destination}` : 'Выберите перевозку в списке'}</p><small>Разделы открываются для этого груза</small></div>
-      <div className="sidebar-provider"><small>AI-ПРОВАЙДЕР</small><strong>{context?.provider.model || 'Gemini'}</strong><span>{context?.provider.configured ? 'Ключ настроен · внешний API' : 'Для прогноза нужен ключ API'}</span></div>
+      <div className="sidebar-provider"><small>ДЕМО-СЦЕНАРИИ</small><strong>7 вариантов задержки</strong><span>Случайный выбор · без API-ключей</span></div>
       <div className="sidebar-bottom"><span className="demo-dot"/> Демонстрационная среда<small>Каспийский транспортный коридор</small></div>
     </aside>
     <main>
       <header><div><span className="eyebrow">ЦЕНТР УПРАВЛЕНИЯ ПЕРЕВОЗКАМИ</span><h1>{currentPage.title}</h1><p className="page-subtitle">{currentPage.hint}</p></div><div className="header-actions"><span className={online ? 'connection online' : 'connection'}>{online ? '● API подключён' : '○ Нет соединения'}</span><button onClick={reload} disabled={busy || loading}>Обновить ↻</button></div></header>
-      <div className="demo-banner">ДЕМО <span>Синтетические грузы, история и сводки · прогноз через Gemini · состояние сбрасывается при перезапуске.</span></div>
+      <div className="demo-banner">ДЕМО <span>Синтетические грузы, история и сводки · случайные сценарии задержек · состояние сбрасывается при перезапуске.</span></div>
       {error && <div role="alert" className="error"><span>{error}</span><button onClick={reload} disabled={busy || loading}>Повторить</button></div>}
       <section className="metrics" aria-label="Сводка перевозок"><article><span>Всего перевозок</span><strong>{shipments.length}</strong><small>В текущей демонстрации</small></article><article><span>Грузы в пути</span><strong>{shipments.filter(item => item.status === 'in_transit').length}</strong><small>Активные перевозки</small></article><article><span>Ожидают отправки</span><strong>{shipments.filter(item => item.status === 'pending').length}</strong><small>Подготовка к перевозке</small></article><article><span>Завершены</span><strong>{shipments.filter(item => item.status === 'completed').length}</strong><small>Доставка выполнена</small></article></section>
       <div className="workspace">
@@ -160,12 +161,13 @@ function App() {
           {!detail ? <div className="empty">{loading || detailLoading ? 'Загрузка карточки…' : selected ? 'Не удалось загрузить карточку. Нажмите «Обновить», чтобы повторить.' : 'Выберите перевозку'}</div> : <>
             <div className="detail-heading"><div><span className="eyebrow">{detail.id} / {currentPage.title.toUpperCase()}</span><h2>{detail.name}</h2><p>{detail.origin} <span className="arrow">→</span> {detail.destination}</p></div><span className={`badge ${detail.status}`}>{labels[detail.status]}</span></div>
             <div className="tab-content" key={`${selected}-${page}`}>
+              {(page === 'monitor' || page === 'scenario') && routes.length > 0 && <RouteMap routes={routes} selected={routeId} onSelect={setRouteId}/> }
               {page === 'monitor' && <>
                 <div className="section-title"><h3>Этапы перевозки</h3><span>По данным груза</span></div><ol className="stages">{detail.stages.map((stage, index) => <li key={index} className={stage.status}><span>{stage.status === 'completed' ? '✓' : index + 1}</span><div><strong>{stage.name}</strong><small>{stage.status === 'current' ? 'Текущий этап' : stage.status === 'completed' ? 'Выполнено' : 'Ожидается'}</small></div></li>)}</ol>
                 <div className="summary-grid"><article><span>Средняя историческая задержка</span><strong>{hours(detail.historical_avg_delay_hours)}</strong></article><article><span>Последний прогноз задержки</span><strong>{detail.last_delay_hours == null ? 'Не рассчитан' : hours(detail.last_delay_hours)}</strong></article><article><span>Комплектность документов</span><strong>{labels[detail.preclearance_status]}</strong></article></div>
                 <div className="section-title"><h3>Маршруты и ETA</h3><span>{detail.last_delay_hours == null ? 'До расчёта задержки' : 'С учётом последнего прогноза'}</span></div>
-                {routes.length ? <RouteComparison routes={routes}/> : <p className="empty">{busy ? 'Обновляем ETA…' : 'Маршруты недоступны. Обновите данные.'}</p>}
-                <p className="footnote">ETA показан как длительность в часах. Маршруты и CO₂e — модельные оценки; без отдельного AI-прогноза маршрут показывает базовый ETA. GPS и календарное время прибытия сервер не передаёт.</p>
+                {routes.length ? <RouteComparison routes={routes} selected={routeId} onSelect={setRouteId}/> : <p className="empty">{busy ? 'Обновляем ETA…' : 'Маршруты недоступны. Обновите данные.'}</p>}
+                <p className="footnote">ETA показан как длительность в часах. Маршруты и CO₂e — модельные оценки; до выбора сценария маршрут показывает базовый ETA. Линии на карте схематичные, без GPS и дорожного роутинга.</p>
               </>}
               {page === 'sources' && <>
                 <div className="section-title"><h3>Демонстрационные сводки</h3><span className="badge">Синтетические данные</span></div>
@@ -174,30 +176,24 @@ function App() {
                 {context ? <><p className="mono">{context.snapshot_id} · {new Date(context.observed_at).toLocaleString('ru-RU')}</p>
                   <div className="source-grid">{context.sources.map(source => <article key={source.kind}><h3>{source.name}</h3><p>{source.note}</p></article>)}</div>
                   <dl className="source-values">{Object.entries(context.conditions).map(([field, value]) => <div key={field}><dt>{({weather_severity:'Погода (0–5)', port_load:'Загрузка порта (%)', wind_speed:'Ветер (м/с)', wave_height:'Волны (м)', rail_delay:'Поезд (ч)'})[field] || field}</dt><dd>{value}</dd></div>)}</dl>
-                  <p className="footnote">История: 200 синтетических наблюдений по погодной оценке, загрузке порта и фактической задержке. История не содержит измерений ветра, волн или разбивки по маршрутам. Точность внешней модели на реальных данных не оценивалась.</p>
+                  <p className="footnote">История: 200 синтетических наблюдений по погодной оценке, загрузке порта и фактической задержке. История не содержит измерений ветра, волн или разбивки по маршрутам. Эти сводки справочные и не влияют на случайные задержки.</p>
                 </> : !contextError && <p>Загрузка сводок…</p>}
               </>}
               {page === 'scenario' && <>
-                <div className="section-title"><h3>Условия из сводки</h3><span className="badge">Автоматически</span></div>
-                <p className="muted">Сервер читает наблюдения из файлов проекта и выбирает новую сводку при каждом запуске. Условия доступны только для просмотра; Gemini анализирует их вместе с историей.</p>
-                {contextError && <p role="alert" className="notice">{contextError}</p>}
-                {context ? <>
-                  <p className="footnote">Сводка {context.snapshot_id} · наблюдение {context.observation_id} · собрано {new Date(context.observed_at).toLocaleString('ru-RU')}</p>
-                  <dl className="source-values">{Object.entries(context.conditions).map(([field, value]) => <div key={field}><dt>{({weather_severity:'Погода (0–5)', port_load:'Загрузка порта (%)', wind_speed:'Ветер (м/с)', wave_height:'Волны (м)', rail_delay:'Поезд (ч)'})[field] || field}</dt><dd>{value}</dd></div>)}</dl>
-                  {!context.provider.configured && <div className="notice">Прогноз недоступен: задайте GEMINI_API_KEY в backend/.env и перезапустите сервер.</div>}
-                </> : !contextError && <p>Загрузка сводки…</p>}
+                <div className="section-title"><h3>Случайный сценарий задержки</h3><span className="badge">Демо</span></div>
+                <p className="muted">Выберите маршрут и получите один из 7 вариантов: 0, 1,5, 3, 4,5, 6, 8 или 12 часов с соответствующей причиной. Каждый запрос выбирает сценарий случайно; варианты могут повторяться. Сводки погоды и история на выбор не влияют.</p>
                 <form onSubmit={predict}>
                   <fieldset disabled={busy}><legend className="sr-only">Маршрут прогноза</legend>
                     <label>Маршрут для прогноза<select required disabled={!routes.length} value={routeId} onChange={event => setRouteId(event.target.value)}>{routes.map(route => <option key={route.route_id} value={route.route_id}>{route.name}</option>)}</select></label>
-                    <button className="primary" disabled={busy || !online || !context?.provider.configured || !routes.length}>{busy ? 'Анализ Gemini…' : 'Получить AI-прогноз'}</button>
+                    <button className="primary" disabled={busy || !online || !routes.length}>{busy ? 'Выбираем сценарий…' : 'Сгенерировать задержку'}</button>
                   </fieldset>
                 </form>
                 {forecast && result && <>
-                  <div className={`result ${result.risk}`} role="status"><span>Прогноз дополнительной задержки</span><strong>{hours(result.delay_hours)}</strong><p>Риск: {labels[result.risk]}</p><ul>{result.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul><div className="model-info"><span>Модель: {result.model || 'не указана сервером'}</span><span>Метод: {result.method || 'не указан сервером'}</span><span>Версия: {result.model_version || 'не указана'}</span><span>Контекст: {result.source_snapshot_id}</span><span>Промпт: {result.prompt_version}</span><span>Маршрут: {result.route_id}</span></div></div>
-                  <p className="footnote">Прогноз для маршрута {forecast.request.route_id}. Условия и источник подтверждены сервером.</p>
-                  {changed && <p className="notice">Маршрут или сводка изменились. Ниже остаётся предыдущий результат — запустите прогноз заново.</p>}
+                  <div className={`result ${result.risk}`} role="status"><span>Прогноз дополнительной задержки</span><strong>{hours(result.delay_hours)}</strong><p>Риск: {labels[result.risk]}</p><ul>{result.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul><div className="model-info"><span>Сценарий: {result.scenario_id}</span><span>Маршрут: {result.route_id === 'main' ? 'Основной' : 'Альтернативный'}</span></div></div>
+                  <p className="footnote">Прогноз для маршрута {forecast.request.route_id}. Задержка и причина выбраны случайно.</p>
+                  {changed && <p className="notice">Выбран другой маршрут. Ниже остаётся предыдущий результат — запустите прогноз заново.</p>}
                   <div className="section-title forecast-routes"><h3>ETA после расчёта</h3><span>Сравнение с состоянием до запроса</span></div>
-                  {routes.length ? <RouteComparison routes={routes} baseline={forecast.baseline}/> : <p className="empty">{busy ? 'Обновляем ETA…' : 'Не удалось обновить ETA. Повторите загрузку данных.'}</p>}
+                  {routes.length ? <RouteComparison routes={routes} baseline={forecast.baseline} selected={routeId} onSelect={setRouteId}/> : <p className="empty">{busy ? 'Обновляем ETA…' : 'Не удалось обновить ETA. Повторите загрузку данных.'}</p>}
                 </>}
               </>}
               {page === 'documents' && <>

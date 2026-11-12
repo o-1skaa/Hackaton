@@ -11,3 +11,14 @@
 .source-grid p {color: #536770; line-height: 1.6;}
 .source-values {display: grid; gap: 10px;}
 .source-values div {display: flex; justify-content: space-between; border-bottom: 1px solid #e1e7eb; padding: 10px 0;}
+
+.route-map-section{margin-bottom:28px;min-width:0}
+.route-map{height:420px;width:100%;border:1px solid #dfe5e9;border-radius:8px;background:#e4edf0;isolation:isolate;z-index:0}
+.map-route-controls{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}
+.map-route-controls button{font-size:11px;display:flex;align-items:center;gap:7px}
+.map-route-controls button[aria-pressed=true],.route button[aria-pressed=true]{border-color:#168780;background:#edf8f5}
+.map-route-controls span{width:18px;height:4px;border-radius:2px;flex-shrink:0}
+.route-map .leaflet-control a{display:block}
+.route-map .leaflet-control-attribution{font-size:10px}
+.route-map .leaflet-control-attribution a{display:inline}
+@media(max-width:600px){.route-map{height:340px}}

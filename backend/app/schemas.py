@@ -12,14 +12,10 @@ class PredictResponse(BaseModel):
     delay_hours: float
     risk: Literal["low", "medium", "high"]
     reasons: list[str]
-    model: str
-    model_version: str
-    method: Literal["external_llm"]
-    prompt_version: str
+    method: Literal["demo_random"]
+    scenario_id: str
     route_id: Literal["main", "alternative"]
     synthetic: Literal[True]
-    source_snapshot_id: str
-    conditions: dict[str, float]
 
 
 class SourceContext(BaseModel):
@@ -92,6 +88,7 @@ class Route(BaseModel):
     co2_kg: float
     recommended: bool
     reason: str
+    waypoints: list[tuple[float, float]]
 
 
 class CheckedDocument(BaseModel):

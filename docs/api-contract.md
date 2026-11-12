@@ -27,51 +27,35 @@
 - `preclearance_status`: `not_submitted | submitted | approved | rejected`;
 - `last_delay_hours`: число или `null` до первого прогноза.
 
-## Прогноз
+## Случайный сценарий
 
-Запрос `POST /api/predict`:
+`POST /api/predict`: `{"shipment_id":"SCT-001","route_id":"main"}`.
+`route_id`: main / alternative, по умолчанию main. Неизвестный груз — 404,
+лишние поля и неверный маршрут — 422.
 
-```json
-{"shipment_id":"SCT-001","route_id":"main"}
-```
-
-Обязателен ID груза. `route_id`: main / alternative, по умолчанию main.
-Погода, загрузка порта, ветер, волны и задержка поезда берутся сервером из текущей
-сводки. Любое дополнительное поле в запросе (в том числе прежние погодные параметры)
-даёт 422. Неизвестный груз — 404.
-
-Пример ответа (число иллюстративное, фактический результат возвращает Gemini):
+Пример ответа:
 
 ```json
-{
-  "delay_hours":6.5,"risk":"high","reasons":["Высокая загрузка порта и сильный ветер"],
-  "model":"gemini-3.8-flash","model_version":"gemini-3.8-flash","method":"external_llm",
-  "prompt_version":"caspian-gemini-v2","route_id":"main","synthetic":true,
-  "source_snapshot_id":"DEMO-run-id-SCT-001",
-  "conditions":{"weather_severity":4,"port_load":90,"wind_speed":17,"wave_height":2.8,"rail_delay":3}
-}
+{"delay_hours":6,"risk":"high","reasons":["Сильный ветер: временно приостановлены портовые операции."],"scenario_id":"wind","method":"demo_random","route_id":"main","synthetic":true}
 ```
 
-`model_version` — идентификатор модели из ответа Gemini `modelVersion`, при отсутствии
-используется запрошенное имя. `prompt_version` — версия инструкций приложения.
-`risk`: low (<2 ч), medium (2–4 ч), high (>=4 ч). При успехе сохраняются задержка
-выбранного маршрута, `last_delay_hours` и событие с моделью и ID сводки.
-При сбое ETA и события не меняются. Повторный AI-запрос может дать другой результат,
-при этом исходные условия в одном запуске сервера одинаковые.
+Случайный выбор одного из 7 сценариев; повторения допустимы.
+`risk`: low <2 ч, medium <4 ч, high >=4 ч. Ключи и внешние API не используются.
+Задержка записывается для выбранного маршрута, в карточку и журнал.
 
-`GET /api/prediction-context/{shipment_id}` возвращает:
+`GET /api/prediction-context/{shipment_id}` сохраняет справочные синтетические
+сводки; `provider`: `{"provider":"local","configured":true,"method":"demo_random"}`.
+Сводки не участвуют в генерации задержки.
 
-- `snapshot_id`: ID сводки текущего запуска;
-- `observation_id`: ID выбранной записи файла;
-- `synthetic: true`;
-- `observed_at`: время формирования демо-сводки, ISO UTC;
-- `conditions`: weather_severity (0–5), port_load (0–100 %), wind_speed (0–100 м/с), wave_height (0–30 м), rail_delay (0–720 ч);
-- `sources`: массив `{name, kind, note}`;
-- `provider`: `{provider: "gemini", configured: boolean, model, method, prompt_version}`.
+## Маршруты и карта
 
-`configured` проверяет наличие ключа, а не баланс и доступность API. Ключ не передаётся
-клиенту. Сводка читается из файлов репозитория при запуске, остаётся стабильной до
-следующего запуска и отличается от прошлого сохранённого снимка.
+`GET /api/routes/{shipment_id}` возвращает Route[]: `route_id`, `name`,
+`distance_km`, `eta_hours`, `co2_kg`, `recommended`, `reason`,
+`waypoints` — массив пар [широта, долгота].
+ETA = базовые 72 ч (main) или 70 ч (alternative) + последняя задержка маршрута.
+Основной путь через Махачкалу; альтернативный через Баку. Общие конечные точки:
+Астрахань и Бендер-Аббас. Геометрия схематичная, все показатели демонстрационные.
+Карта Leaflet не делает запросов роутинга; только подложка загружается из OpenStreetMap.
 
 ## Проверка документов
 
@@ -94,22 +78,13 @@ POST требует заголовок `X-API-Key` со значением `DEMO
 
 GET проверки возвращает тот же результат плюс `shipment_id` и `documents: {type: string, filename: string}[]`. Возвращаемые типы документов сохраняют исходное написание.
 
-## Журнал и маршруты
+## Журнал
 
-`Event`: `{timestamp: string, event: "prediction_updated" | "submitted" | "approved" | "rejected", details: string}`. Время — ISO 8601 UTC. Журнал сначала пуст.
-
-`Route`: `{route_id: string, name: string, distance_km: number, eta_hours: number, co2_kg: number, recommended: boolean, reason: string}`.
-Возвращаются основной и альтернативный маршруты. Ровно один рекомендуется; политика и ограничения описаны в backend/README.md.
+`Event`: `{timestamp: string, event: "prediction_updated" | "submitted" | "approved" | "rejected", details: string}`.
+Время — ISO 8601 UTC. Журнал сначала пуст.
 
 ## Ошибки
 
-| Код | Причина | Тело |
-| --- | --- | --- |
-| 401 | Нет ключа или ключ неверный для POST preclearance | `{error: string}` |
-| 404 | Груз или проверка не найдены | `{error: string}` |
-| 502 | Невалидный ответ модели | `{error: string}` |
-| 503 | Нет ключа или API провайдера недоступен | `{error: string}` |
-| 504 | Тайм-аут AI API | `{error: string}` |
-| 422 | Некорректный запрос | `{error: "Invalid request payload", details: array}` |
-
-Данные и состояние демонстрационные; прогнозы, проверки и события сбрасываются после перезапуска сервера.
+401 — неверный ключ проверки документов; 404 — груз или проверка не найдены;
+422 — неверный запрос. Тело ошибки содержит `error`, для 422 также `details`.
+Состояние демонстрационное и сбрасывается после перезапуска.

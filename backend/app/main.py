@@ -17,7 +17,7 @@ from app.schemas import (
     PredictRequest, PredictResponse, PreclearanceRequest, PreclearanceResponse,
     HealthResponse, ShipmentSummary, ShipmentDetail, Event, Route, PreclearanceCheck, PredictionContext,
 )
-from app.services.prediction import predict as make_prediction, provider_status, PredictionUnavailable
+from app.services.prediction import predict as make_prediction, provider_status
 from app.services.routing import calculate_routes
 from app.services.data_sources import refresh_snapshots
 
@@ -122,14 +122,11 @@ def prediction_context(shipment_id: str) -> dict:
 @app.post("/api/predict", response_model=PredictResponse)
 def predict(payload: PredictRequest) -> dict:
     shipment = get_shipment_or_404(payload.shipment_id)
-    try:
-        result = make_prediction(shipment=shipment, source=app.state.source_snapshots[payload.shipment_id],
-                                 route_id=payload.route_id)
-    except PredictionUnavailable as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    result = make_prediction(shipment=shipment, source=app.state.source_snapshots[payload.shipment_id],
+                             route_id=payload.route_id)
     ROUTE_PREDICTIONS.setdefault(payload.shipment_id, {})[payload.route_id] = result["delay_hours"]
     LATEST_PREDICTIONS[payload.shipment_id] = result["delay_hours"]
-    add_event(payload.shipment_id, "prediction_updated", f"Gemini / {result['model']} / {payload.route_id}: {result['delay_hours']} ч; сводка {result['source_snapshot_id']}")
+    add_event(payload.shipment_id, "prediction_updated", f"Демо-сценарий {result['scenario_id']} / {payload.route_id}: {result['delay_hours']} ч; {result['reasons'][0]}")
     return result
 
 

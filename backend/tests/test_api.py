@@ -1,5 +1,3 @@
-import json
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 import app.main as main
@@ -7,15 +5,8 @@ import app.main as main
 
 @pytest.fixture(autouse=True)
 def isolated_state(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "test-only-key")
-    original_post = httpx.Client.post
-    def model_response(self, url, **kwargs):
-        if str(url).startswith("/"):
-            return original_post(self, url, **kwargs)
-        return httpx.Response(200, request=httpx.Request('POST', url), json={
-            'modelVersion':'test-gemini', 'candidates':[{'finishReason':'STOP', 'content':{'parts':[{'text':json.dumps({
-                'delay_hours':6.5, 'risk':'high', 'reasons':['Демонстрационный ответ API']})}]}}]})
-    monkeypatch.setattr(httpx.Client, 'post', model_response)
+    from app.services import prediction
+    monkeypatch.setattr(prediction, "choice", lambda scenarios: scenarios[4])
     monkeypatch.setattr(main, "ROUTE_PREDICTIONS", {})
     monkeypatch.setattr(main, "DEMO_API_KEY", "test-only-key")
     monkeypatch.setattr(main, "EVENTS", {sid: [] for sid in main.SHIPMENTS})
@@ -43,7 +34,7 @@ def test_shipment_not_found(client):
     assert "error" in response.json()
 
 
-def test_prediction_uses_provider_output(client):
+def test_prediction_uses_demo_scenario(client):
     payload = {"shipment_id": "SCT-001"}
     first = client.post("/api/predict", json=payload)
     second = client.post("/api/predict", json=payload)
@@ -106,7 +97,7 @@ def test_prediction_updates_detail_and_events(client):
         "shipment_id": "SCT-001",
     })
     assert result.status_code == 200
-    assert result.json()["delay_hours"] == 6.5
+    assert result.json()["delay_hours"] == 6.0
     assert result.json()["risk"] == "high"
     detail = client.get("/api/shipments/SCT-001").json()
     assert detail["last_delay_hours"] == result.json()["delay_hours"]
@@ -154,26 +145,23 @@ def test_context_is_authoritative(client):
     context = client.get('/api/prediction-context/SCT-001').json()
     assert context['synthetic'] is True
     assert context['provider']['configured'] is True
-    assert context['provider']['provider'] == 'gemini'
-    assert context['provider']['model'] == 'gemini-3.8-flash'
+    assert context['provider']['provider'] == 'local'
     assert context['observation_id']
     result = client.post('/api/predict', json={'shipment_id':'SCT-001','route_id':'alternative'})
     assert result.status_code == 200
-    assert result.json()['conditions'] == context['conditions']
-    assert result.json()['source_snapshot_id'] == context['snapshot_id']
-    assert result.json()['method'] == 'external_llm'
+    assert result.json()['method'] == 'demo_random'
     routes = client.get('/api/routes/SCT-001').json()
     assert routes[0]['eta_hours'] == 72
-    assert routes[1]['eta_hours'] == 76.5
+    assert routes[1]['eta_hours'] == 76.0
 
 
-def test_provider_failure_does_not_mutate_state(client, monkeypatch):
-    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+def test_scenarios_work_without_ai_keys(client, monkeypatch):
+    for key in ('GEMINI_API_KEY', 'GIGACHAT_CREDENTIALS', 'DEEPSEEK_API_KEY'):
+        monkeypatch.delenv(key, raising=False)
     result = client.post('/api/predict', json={'shipment_id':'SCT-001'})
-    assert result.status_code == 503
-    assert not main.EVENTS['SCT-001']
-    assert not main.LATEST_PREDICTIONS
-    assert not main.ROUTE_PREDICTIONS
+    assert result.status_code == 200
+    assert result.json()['method'] == 'demo_random'
+    assert result.json()['scenario_id'] == 'wind'
 
 
 @pytest.mark.parametrize('field,value', [('weather_severity',2),('port_load',50),('wind_speed',8),('wave_height',1),('rail_delay',2),('route_id','unknown')])
