@@ -3,3 +3,11 @@
 @media(max-width:1100px){.nav{padding:12px 8px;gap:8px}.nav-label small{font-size:9px}.nav-number{display:none}}
 @media(max-width:800px){.sidebar-context{display:none}.sidebar nav{display:flex;width:100%;gap:5px;overflow:auto}.sidebar nav .nav{flex:1;justify-content:center;margin:0;padding:12px 10px}.nav .nav-label{display:block;flex:none;font-size:12px}.nav .nav-label small,.nav .nav-number{display:none}.sidebar .brand{margin-bottom:8px}.scenario-grid{gap:0 12px}.header-actions{align-items:flex-end}.page-subtitle{font-size:11px}}
 @media(max-width:480px){.scenario-grid{grid-template-columns:1fr}.detail-heading{flex-wrap:wrap}.metrics article{padding:13px}.metrics span{font-size:10px}.sidebar nav .nav{padding:12px 7px}.nav .nav-label{font-size:11px}.route{padding:16px}.tab-content{padding:18px}.demo-banner{gap:8px}.model-info{display:grid}footer{flex-wrap:wrap}}
+
+.sidebar-provider {margin: 20px 12px; padding: 16px; border: 1px solid #34434f; border-radius: 10px; display: grid; gap: 8px; color: #d9e6e8; font-size: 12px;}
+.sidebar-provider small {letter-spacing: .12em; color: #91a5ae; font-size: 10px;}
+.source-grid {display: grid; gap: 12px; margin: 20px 0;}
+.source-grid article {border: 1px solid #dce4e7; border-radius: 10px; padding: 16px;}
+.source-grid p {color: #536770; line-height: 1.6;}
+.source-values {display: grid; gap: 10px;}
+.source-values div {display: flex; justify-content: space-between; border-bottom: 1px solid #e1e7eb; padding: 10px 0;}

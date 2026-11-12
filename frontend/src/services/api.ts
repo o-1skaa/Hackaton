@@ -2,7 +2,7 @@ export interface Shipment { id: string; name: string; origin: string; destinatio
 export interface Detail extends Shipment { historical_avg_delay_hours: number; stages: {name: string; status: string}[]; preclearance_status: string; last_delay_hours: number | null }
 export interface Route { route_id: string; name: string; distance_km: number; eta_hours: number; co2_kg: number; recommended: boolean; reason: string }
 export interface Event { timestamp: string; event: string; details: string }
-export interface Prediction { delay_hours: number; risk: 'low' | 'medium' | 'high'; reasons: string[]; model?: string; model_version?: string; method?: string }
+export interface Prediction { delay_hours: number; risk: 'low' | 'medium' | 'high'; reasons: string[]; model?: string; model_version?: string; method?: string; prompt_version?: string; route_id?: string; synthetic?: boolean; source_snapshot_id?: string; conditions?: Record<string, number> }
 export interface Check { check_id: string; shipment_id: string; status: string; reasons: string[]; documents: {type: string; filename: string}[] }
 const base = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
 export async function api<T>(path: string, body?: unknown, key?: string, signal?: AbortSignal): Promise<T> {
@@ -17,3 +17,5 @@ export async function api<T>(path: string, body?: unknown, key?: string, signal?
   return data as T
 }
 export const getShipments = () => api<Shipment[]>('/api/shipments')
+
+export interface PredictionContext { snapshot_id: string; synthetic: true; observed_at: string; conditions: {weather_severity: number; wind_speed: number; wave_height: number; port_load: number; rail_delay: number}; sources: {name: string; kind: string; note: string}[]; provider: {provider: string; configured: boolean; model: string; method: string; prompt_version: string} }

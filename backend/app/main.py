@@ -14,9 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.data import SHIPMENTS
 from app.schemas import (
     PredictRequest, PredictResponse, PreclearanceRequest, PreclearanceResponse,
-    HealthResponse, ShipmentSummary, ShipmentDetail, Event, Route, PreclearanceCheck,
+    HealthResponse, ShipmentSummary, ShipmentDetail, Event, Route, PreclearanceCheck, PredictionContext,
 )
-from app.services.prediction import predict as make_prediction
+from app.services.prediction import predict as make_prediction, context_for, provider_status, PredictionUnavailable
 from app.services.routing import calculate_routes
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
@@ -25,7 +25,7 @@ DEMO_API_KEY = os.getenv("DEMO_API_KEY", "demo-local-key")
 app = FastAPI(
     title="Smart Caspian Transit — DEMO API",
     description="Все грузы, документы, маршруты и прогнозы демонстрационные/синтетические.",
-    version="1.0.0",
+    version="1.1.0",
 )
 @app.exception_handler(HTTPException)
 async def handle_http_error(request, exc: HTTPException):
@@ -52,6 +52,7 @@ app.add_middleware(
 # Только демо-хранилище в памяти: при перезапуске очищается.
 EVENTS: dict[str, list[dict]] = {shipment_id: [] for shipment_id in SHIPMENTS}
 LATEST_PREDICTIONS: dict[str, float] = {}
+ROUTE_PREDICTIONS: dict[str, dict[str, float]] = {}
 PRECLEARANCE_CHECKS: dict[str, dict] = {}
 
 
@@ -103,12 +104,24 @@ def get_shipment(shipment_id: str) -> dict:
     }
 
 
+@app.get("/api/prediction-context/{shipment_id}", response_model=PredictionContext)
+def prediction_context(shipment_id: str) -> dict:
+    get_shipment_or_404(shipment_id)
+    return {**context_for(shipment_id), "provider": provider_status()}
+
+
 @app.post("/api/predict", response_model=PredictResponse)
 def predict(payload: PredictRequest) -> dict:
-    get_shipment_or_404(payload.shipment_id)
-    result = make_prediction(payload.weather_severity, payload.port_load)
+    shipment = get_shipment_or_404(payload.shipment_id)
+    try:
+        result = make_prediction(payload.weather_severity, payload.port_load, shipment=shipment,
+                                 wind_speed=payload.wind_speed, wave_height=payload.wave_height,
+                                 rail_delay=payload.rail_delay, route_id=payload.route_id)
+    except PredictionUnavailable as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    ROUTE_PREDICTIONS.setdefault(payload.shipment_id, {})[payload.route_id] = result["delay_hours"]
     LATEST_PREDICTIONS[payload.shipment_id] = result["delay_hours"]
-    add_event(payload.shipment_id, "prediction_updated", f"Задержка: {result['delay_hours']} ч")
+    add_event(payload.shipment_id, "prediction_updated", f"DeepSeek / {result['model']} / {payload.route_id}: {result['delay_hours']} ч; сводка {result['source_snapshot_id']}")
     return result
 
 
@@ -156,7 +169,7 @@ def shipment_events(shipment_id: str) -> list[dict]:
 @app.get("/api/routes/{shipment_id}", response_model=list[Route])
 def routes(shipment_id: str) -> list[dict]:
     shipment = get_shipment_or_404(shipment_id)
-    return calculate_routes(shipment, LATEST_PREDICTIONS.get(shipment_id, 0))
+    return calculate_routes(shipment, ROUTE_PREDICTIONS.get(shipment_id, {}))
 
 
 # Register after API routes; missing API endpoints must remain JSON 404s.

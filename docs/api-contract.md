@@ -9,6 +9,7 @@
 | GET | `/health` | `{status: "ok", mode: "synthetic-demo"}` |
 | GET | `/api/shipments` | `ShipmentSummary[]` |
 | GET | `/api/shipments/{shipment_id}` | `ShipmentDetail` |
+| GET | `/api/prediction-context/{shipment_id}` | `PredictionContext` |
 | POST | `/api/predict` | `PredictResponse` |
 | POST | `/api/preclearance` | `PreclearanceResponse` |
 | GET | `/api/preclearance/{check_id}` | `PreclearanceCheck` |
@@ -28,20 +29,48 @@
 
 ## Прогноз
 
-Запрос:
+Запрос `POST /api/predict`:
 
 ```json
-{"shipment_id":"SCT-001","weather_severity":4,"port_load":90}
+{"shipment_id":"SCT-001","weather_severity":4,"port_load":90,"wind_speed":17,"wave_height":2.8,"rail_delay":3,"route_id":"main"}
 ```
 
-Погода: число 0–5; загрузка порта: число 0–100. Неизвестный груз возвращает 404.
-Ответ для текущей синтетической истории:
+| Поле | Диапазон | Обязательное |
+| --- | --- | --- |
+| shipment_id | ID существующего груза | Да |
+| weather_severity | 0–5 | Да |
+| port_load | 0–100 % | Да |
+| wind_speed | 0–100 м/с | Нет; null/пропуск → сводка |
+| wave_height | 0–30 м | Нет; null/пропуск → сводка |
+| rail_delay | 0–720 ч | Нет; null/пропуск → сводка |
+| route_id | main / alternative | Нет; по умолчанию main |
+
+Все числовые входы должны быть конечными. Неизвестный груз — 404.
+
+Пример ответа (число показано для иллюстрации; фактический результат возвращает DeepSeek):
 
 ```json
-{"delay_hours":6.5,"risk":"high","reasons":["Неблагоприятные погодные условия","Высокая загруженность порта"]}
+{
+  "delay_hours":6.5,"risk":"high","reasons":["Высокая загрузка порта и сильный ветер"],
+  "model":"deepseek-flash","model_version":"deepseek-flash","method":"external_llm",
+  "prompt_version":"caspian-context-v1","route_id":"main","synthetic":true,
+  "source_snapshot_id":"DEMO-20261112-001",
+  "conditions":{"weather_severity":4,"port_load":90,"wind_speed":17,"wave_height":2.8,"rail_delay":3}
+}
 ```
 
-`risk`: `low | medium | high`. После запроса обновляется `last_delay_hours` и добавляется событие `prediction_updated`.
+`model_version` — идентификатор модели из ответа провайдера, при отсутствии — запрошенное
+имя; это не гарантия неизменного набора весов. `prompt_version` версионирует наши инструкции.
+`risk`: low (<2 ч), medium (2–4 ч), high (>=4 ч). При успехе сохраняются задержка выбранного
+маршрута, `last_delay_hours` и событие с именем модели и ID сводки. Последний прогноз
+в карточке может относиться к любому маршруту; журнал указывает к какому.
+При сбое нет записи в журнал или изменения ETA. Повторные запросы могут дать разные ответы.
+
+`GET /api/prediction-context/{shipment_id}` возвращает `snapshot_id`, `synthetic: true`,
+`observed_at` (ISO UTC), `conditions` (пять числовых условий), `sources` (массив объектов
+`name`, `kind`, `note`) и `provider` (`provider`, `configured`, `model`, `method`, `prompt_version`).
+`configured` означает только наличие ключа, не успешную проверку баланса/доступности API.
+Это фиксированная демонстрационная сводка; живого парсинга нет. Ключ не передаётся клиенту.
 
 ## Проверка документов
 
@@ -77,24 +106,9 @@ GET проверки возвращает тот же результат плю�
 | --- | --- | --- |
 | 401 | Нет ключа или ключ неверный для POST preclearance | `{error: string}` |
 | 404 | Груз или проверка не найдены | `{error: string}` |
+| 502 | Невалидный ответ модели | `{error: string}` |
+| 503 | Нет ключа или API провайдера недоступен | `{error: string}` |
+| 504 | Тайм-аут AI API | `{error: string}` |
 | 422 | Некорректный запрос | `{error: "Invalid request payload", details: array}` |
 
 Данные и состояние демонстрационные; прогнозы, проверки и события сбрасываются после перезапуска сервера.
-
-
-## Подготовка frontend к расширению прогноза
-
-Текущий POST `/api/predict` остаётся описанным выше. Обученная ML-модель и
-физические погодные параметры пока отсутствуют в backend.
-
-Frontend готов к добавлению в PredictRequest: `wind_speed` (м/с), `wave_height`
-(м), `rail_delay` (ч), `route_id` (строка из GET routes), при сохранении
-`shipment_id` и `port_load`. Поля включаются только при наличии в OpenAPI.
-Если новый backend не использует `weather_severity`, его не нужно объявлять:
-интерфейс скроет погодную шкалу и не отправит её вместо физических параметров.
-
-Для сведений о модели frontend поддерживает необязательные строки в PredictResponse:
-`model`, `method`, `model_version`. Они не являются доказательством качества модели;
-метрики должны быть проверены при её обучении. Пока backend не возвращает эти поля,
-интерфейс показывает отсутствие сведений. Расширение контрактов нужно реализовать
-на backend вместе с моделью, а не просто добавить поля, которые прогноз игнорирует.

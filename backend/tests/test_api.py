@@ -1,3 +1,5 @@
+import json
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 import app.main as main
@@ -5,6 +7,16 @@ import app.main as main
 
 @pytest.fixture(autouse=True)
 def isolated_state(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-only-key")
+    original_post = httpx.Client.post
+    def model_response(self, url, **kwargs):
+        if str(url).startswith("/"):
+            return original_post(self, url, **kwargs)
+        return httpx.Response(200, request=httpx.Request('POST', url), json={
+            'model':'test-deepseek', 'choices':[{'finish_reason':'stop', 'message':{'content':json.dumps({
+                'delay_hours':6.5, 'risk':'high', 'reasons':['Демонстрационный ответ API']})}}]})
+    monkeypatch.setattr(httpx.Client, 'post', model_response)
+    monkeypatch.setattr(main, "ROUTE_PREDICTIONS", {})
     monkeypatch.setattr(main, "DEMO_API_KEY", "test-only-key")
     monkeypatch.setattr(main, "EVENTS", {sid: [] for sid in main.SHIPMENTS})
     monkeypatch.setattr(main, "LATEST_PREDICTIONS", {})
@@ -31,7 +43,7 @@ def test_shipment_not_found(client):
     assert "error" in response.json()
 
 
-def test_prediction_is_deterministic(client):
+def test_prediction_uses_provider_output(client):
     payload = {"shipment_id": "SCT-001", "weather_severity": 4, "port_load": 90}
     first = client.post("/api/predict", json=payload)
     second = client.post("/api/predict", json=payload)
@@ -136,3 +148,33 @@ def test_openapi_has_response_models(client):
                  "/api/shipments/{shipment_id}/events"]:
         response_schema = schema["paths"][path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
         assert "$ref" in response_schema or "items" in response_schema
+
+
+def test_context_and_extended_inputs(client):
+    context = client.get('/api/prediction-context/SCT-001').json()
+    assert context['synthetic'] is True
+    assert context['provider']['configured'] is True
+    assert context['conditions']['wind_speed'] == 17
+    result = client.post('/api/predict', json={'shipment_id':'SCT-001','weather_severity':4,'port_load':90,
+                         'wind_speed':22,'wave_height':3,'rail_delay':7,'route_id':'alternative'})
+    assert result.status_code == 200
+    assert result.json()['conditions']['rail_delay'] == 7
+    assert result.json()['method'] == 'external_llm'
+    routes = client.get('/api/routes/SCT-001').json()
+    assert routes[0]['eta_hours'] == 72
+    assert routes[1]['eta_hours'] == 76.5
+
+
+def test_provider_failure_does_not_mutate_state(client, monkeypatch):
+    monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)
+    result = client.post('/api/predict', json={'shipment_id':'SCT-001','weather_severity':4,'port_load':90})
+    assert result.status_code == 503
+    assert not main.EVENTS['SCT-001']
+    assert not main.LATEST_PREDICTIONS
+    assert not main.ROUTE_PREDICTIONS
+
+
+@pytest.mark.parametrize('field,value', [('wind_speed',-1),('wave_height',31),('rail_delay',721),('route_id','unknown')])
+def test_invalid_extended_inputs(client, field, value):
+    result = client.post('/api/predict', json={'shipment_id':'SCT-001','weather_severity':4,'port_load':90,field:value})
+    assert result.status_code == 422

@@ -5,6 +5,10 @@ from pydantic import BaseModel, Field
 class PredictRequest(BaseModel):
     shipment_id: str
     weather_severity: float = Field(ge=0, le=5, allow_inf_nan=False, description="0 — хорошая погода, 5 — экстремальная")
+    wind_speed: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    wave_height: float | None = Field(default=None, ge=0, le=30, allow_inf_nan=False)
+    rail_delay: float | None = Field(default=None, ge=0, le=720, allow_inf_nan=False)
+    route_id: Literal["main", "alternative"] = "main"
     port_load: float = Field(ge=0, le=100, allow_inf_nan=False, description="Загрузка порта, в процентах")
 
 
@@ -12,6 +16,26 @@ class PredictResponse(BaseModel):
     delay_hours: float
     risk: Literal["low", "medium", "high"]
     reasons: list[str]
+    model: str
+    model_version: str
+    method: Literal["external_llm"]
+    prompt_version: str
+    route_id: Literal["main", "alternative"]
+    synthetic: Literal[True]
+    source_snapshot_id: str
+    conditions: dict[str, float]
+
+
+class SourceContext(BaseModel):
+    snapshot_id: str
+    synthetic: Literal[True]
+    observed_at: str
+    conditions: dict[str, float]
+    sources: list[dict[str, str]]
+
+
+class PredictionContext(SourceContext):
+    provider: dict[str, str | bool]
 
 
 class Document(BaseModel):

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from './services/api'
-import type { Shipment, Detail, Route, Event, Prediction, Check } from './services/api'
+import type { Shipment, Detail, Route, Event, Prediction, Check, PredictionContext } from './services/api'
 import { buildPredictionRequest, legacyCapabilities, physicalFields, readCapabilities, validatePrediction } from './services/prediction'
 import type { Capabilities, Scenario } from './services/prediction'
 import './App.css'
@@ -9,7 +9,8 @@ import './App.css'
 const labels: Record<string, string> = {pending:'Ожидает', in_transit:'В пути', completed:'Завершён', not_submitted:'Не отправлены', submitted:'Отправлены', approved:'Приняты', rejected:'Отклонены', low:'Низкий', medium:'Средний', high:'Высокий', prediction_updated:'Обновлён прогноз'}
 const pages = [
   { id: 'monitor', title: 'Мониторинг', hint: 'Этапы, ETA и маршруты', icon: '▦' },
-  { id: 'scenario', title: 'Сценарии', hint: 'Условия и прогноз задержки', icon: '↗' },
+  { id: 'scenario', title: 'AI-прогноз', hint: 'DeepSeek · анализ условий', icon: '↗' },
+  { id: 'sources', title: 'Источники', hint: 'Сводки и происхождение данных', icon: '◈' },
   { id: 'documents', title: 'Документы', hint: 'Проверка комплектности', icon: '▤' },
   { id: 'events', title: 'Журнал', hint: 'События выбранного груза', icon: '◷' },
 ] as const
@@ -53,6 +54,8 @@ function App() {
   const [online, setOnline] = useState(false)
   const [scenario, setScenario] = useState<Scenario>(initialScenario)
   const [capabilities, setCapabilities] = useState<Capabilities>(legacyCapabilities)
+  const [context, setContext] = useState<PredictionContext | null>(null)
+  const [contextError, setContextError] = useState('')
   const [forecast, setForecast] = useState<Forecast | null>(null)
   const [key, setKey] = useState('demo-local-key')
   const [documents, setDocuments] = useState<{type: string; filename: string}[]>([])
@@ -91,9 +94,18 @@ function App() {
     return () => controller.abort()
   }, [selected, revision])
 
+  useEffect(() => {
+    if (!selected) return
+    const controller = new AbortController()
+    api<PredictionContext>(`/api/prediction-context/${encodeURIComponent(selected)}`, undefined, undefined, controller.signal)
+      .then(value => {setContext(value); setContextError(''); setScenario({...initialScenario, ...value.conditions})})
+      .catch(error => {if (!controller.signal.aborted) setContextError(message(error))})
+    return () => controller.abort()
+  }, [selected])
+
   function chooseShipment(id: string) {
     if (id === selected || busy) return
-    setDetail(null); setRoutes([]); setEvents([]); setForecast(null); setCheck(null); setCheckId(''); setDocuments([]); setError(''); setDetailLoading(true); setSelected(id)
+    setContext(null); setContextError(''); setDetail(null); setRoutes([]); setEvents([]); setForecast(null); setCheck(null); setCheckId(''); setDocuments([]); setError(''); setDetailLoading(true); setSelected(id)
   }
   function reload() {
     setLoading(true); setDetailLoading(Boolean(selected)); setDetail(null); setRoutes([]); setEvents([]); setForecast(null); setCheck(null); setError(''); setRevision(value => value + 1)
@@ -139,14 +151,15 @@ function App() {
   return <div className="shell">
     <aside className="sidebar">
       <a className="brand" href="/" aria-label="Smart Caspian Transit"><span className="brand-mark">C</span><span>SMART CASPIAN<small>TRANSIT / OPERATIONS</small></span></a>
-      <div className="nav-caption">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+      <div className="nav-caption">УПРАВЛЕНИЕ КОРИДОРОМ</div>
       <nav aria-label="Основная навигация">{pages.map((item, index) => <button key={item.id} className={page === item.id ? 'nav active' : 'nav'} aria-current={page === item.id ? 'page' : undefined} onClick={() => setPage(item.id)}><span aria-hidden="true">{item.icon}</span><span className="nav-label">{item.title}<small>{item.hint}</small></span><span className="nav-number">0{index + 1}</span></button>)}</nav>
       <div className="sidebar-context"><span className="nav-caption">В РАБОТЕ</span><strong>{selected || 'Груз не выбран'}</strong><p>{detail ? `${detail.origin} → ${detail.destination}` : 'Выберите перевозку в списке'}</p><small>Разделы открываются для этого груза</small></div>
+      <div className="sidebar-provider"><small>AI-ПРОВАЙДЕР</small><strong>{context?.provider.model || 'DeepSeek'}</strong><span>{context?.provider.configured ? 'Ключ настроен · внешний API' : 'Для прогноза нужен ключ API'}</span></div>
       <div className="sidebar-bottom"><span className="demo-dot"/> Демонстрационная среда<small>Каспийский транспортный коридор</small></div>
     </aside>
     <main>
       <header><div><span className="eyebrow">ЦЕНТР УПРАВЛЕНИЯ ПЕРЕВОЗКАМИ</span><h1>{currentPage.title}</h1><p className="page-subtitle">{currentPage.hint}</p></div><div className="header-actions"><span className={online ? 'connection online' : 'connection'}>{online ? '● API подключён' : '○ Нет соединения'}</span><button onClick={reload} disabled={busy || loading}>Обновить ↻</button></div></header>
-      <div className="demo-banner">ДЕМО <span>Синтетические грузы и история · погодные условия задаются вручную · состояние сбрасывается при перезапуске.</span></div>
+      <div className="demo-banner">ДЕМО <span>Синтетические грузы, история и сводки · прогноз через DeepSeek · состояние сбрасывается при перезапуске.</span></div>
       {error && <div role="alert" className="error"><span>{error}</span><button onClick={reload} disabled={busy || loading}>Повторить</button></div>}
       <section className="metrics" aria-label="Сводка перевозок"><article><span>Всего перевозок</span><strong>{shipments.length}</strong><small>В текущей демонстрации</small></article><article><span>Грузы в пути</span><strong>{shipments.filter(item => item.status === 'in_transit').length}</strong><small>Активные перевозки</small></article><article><span>Ожидают отправки</span><strong>{shipments.filter(item => item.status === 'pending').length}</strong><small>Подготовка к перевозке</small></article><article><span>Завершены</span><strong>{shipments.filter(item => item.status === 'completed').length}</strong><small>Доставка выполнена</small></article></section>
       <div className="workspace">
@@ -160,28 +173,40 @@ function App() {
                 <div className="summary-grid"><article><span>Средняя историческая задержка</span><strong>{hours(detail.historical_avg_delay_hours)}</strong></article><article><span>Последний прогноз задержки</span><strong>{detail.last_delay_hours == null ? 'Не рассчитан' : hours(detail.last_delay_hours)}</strong></article><article><span>Комплектность документов</span><strong>{labels[detail.preclearance_status]}</strong></article></div>
                 <div className="section-title"><h3>Маршруты и ETA</h3><span>{detail.last_delay_hours == null ? 'До расчёта задержки' : 'С учётом последнего прогноза'}</span></div>
                 {routes.length ? <RouteComparison routes={routes}/> : <p className="empty">{busy ? 'Обновляем ETA…' : 'Маршруты недоступны. Обновите данные.'}</p>}
-                <p className="footnote">ETA показан как длительность в часах. Маршруты и CO₂e — модельные оценки; GPS и календарное время прибытия сервер не передаёт.</p>
+                <p className="footnote">ETA показан как длительность в часах. Маршруты и CO₂e — модельные оценки; Без отдельного AI-прогноза маршрут показывает базовый ETA. GPS и календарное время прибытия сервер не передаёт.</p>
+              </>}
+              {page === 'sources' && <>
+                <div className="section-title"><h3>Демонстрационные сводки</h3><span className="badge">Синтетические данные</span></div>
+                <p className="muted">Имитация заранее собранных данных. Реальные сайты, порты и метеосервисы не опрашиваются.</p>
+                {contextError && <p role="alert" className="notice">{contextError}</p>}
+                {context ? <><p className="mono">{context.snapshot_id} · {new Date(context.observed_at).toLocaleString('ru-RU')}</p>
+                  <div className="source-grid">{context.sources.map(source => <article key={source.kind}><h3>{source.name}</h3><p>{source.note}</p></article>)}</div>
+                  <dl className="source-values">{Object.entries(context.conditions).map(([field, value]) => <div key={field}><dt>{({weather_severity:'Погода (0–5)', port_load:'Загрузка порта (%)', wind_speed:'Ветер (м/с)', wave_height:'Волны (м)', rail_delay:'Поезд (ч)'})[field] || field}</dt><dd>{value}</dd></div>)}</dl>
+                  <p className="footnote">История: 200 синтетических наблюдений по погодной оценке, загрузке порта и фактической задержке. История не содержит измерений ветра, волн или разбивки по маршрутам. Точность внешней модели на реальных данных не оценивалась.</p>
+                </> : !contextError && <p>Загрузка сводок…</p>}
               </>}
               {page === 'scenario' && <>
                 <div className="section-title"><h3>Условия перевозки</h3><span className="badge">{missing.length ? 'Базовый API' : 'Расширенный API'}</span></div>
-                <p className="muted">Измените условия и запустите расчёт. Результат сохраняется для выбранного груза и обновляет длительности маршрутов.</p>
-                {(!capabilities.verified || missing.length > 0) && <div className="notice" role="status">{!capabilities.verified ? 'Контракт API недоступен. Используется прежний запрос: погодная оценка и загрузка порта. ' : ''}{missing.length > 0 && <>Сервер пока не принимает: {missing.map(field => fieldLabels[field]).join(', ')}. Эти поля отключены и не участвуют в расчёте. Обученная модель текущим контрактом не подтверждена.</>}</div>}
+                <p className="muted">Условия загружены из демонстрационной сводки. Можно изменить их вручную. DeepSeek анализирует условия и историю; задержка обновляет ETA только выбранного маршрута.</p>
+                {(!capabilities.verified || missing.length > 0) && <div className="notice" role="status">{!capabilities.verified ? 'Контракт API недоступен. Используется прежний запрос: погодная оценка и загрузка порта. ' : ''}{missing.length > 0 && <>Сервер пока не принимает: {missing.map(field => fieldLabels[field]).join(', ')}. Эти поля отключены и не участвуют в расчёте. Обновите backend для внешнего AI-прогноза.</>}</div>}
                 {unsupportedRequired.length > 0 && <div className="notice">Контракт требует новые поля: {unsupportedRequired.join(', ')}. Для расчёта нужно обновить интерфейс.</div>}
+                {contextError && <p role="alert" className="notice">{contextError}</p>}
+                {context && <div className="notice">{context.provider.configured ? `Внешний API: ${context.provider.model}.` : 'Прогноз недоступен: задайте DEEPSEEK_API_KEY в backend/.env и перезапустите сервер.'} Сводка: {context.snapshot_id}. <button type="button" disabled={busy} onClick={() => {setScenario({...initialScenario, ...context.conditions, route_id: scenario.route_id})}}>Восстановить сводку</button></div>}
                 <form onSubmit={predict}>
                   <fieldset disabled={busy}><legend className="sr-only">Параметры сценария</legend>
                     <div className="scenario-grid">
-                      <label>Скорость ветра, м/с<input type="number" min="0" step="0.1" required disabled={!supports('wind_speed')} value={Number.isFinite(scenario.wind_speed) ? scenario.wind_speed : ''} onChange={event => updateScenario('wind_speed', event.target.valueAsNumber)}/></label>
-                      <label>Высота волн, м<input type="number" min="0" step="0.1" required disabled={!supports('wave_height')} value={Number.isFinite(scenario.wave_height) ? scenario.wave_height : ''} onChange={event => updateScenario('wave_height', event.target.valueAsNumber)}/></label>
-                      <label>Задержка поезда, ч<input type="number" min="0" step="0.1" required disabled={!supports('rail_delay')} value={Number.isFinite(scenario.rail_delay) ? scenario.rail_delay : ''} onChange={event => updateScenario('rail_delay', event.target.valueAsNumber)}/></label>
+                      <label>Скорость ветра, м/с<input type="number" min="0" max="100" step="0.1" required disabled={!supports('wind_speed')} value={Number.isFinite(scenario.wind_speed) ? scenario.wind_speed : ''} onChange={event => updateScenario('wind_speed', event.target.valueAsNumber)}/></label>
+                      <label>Высота волн, м<input type="number" min="0" max="30" step="0.1" required disabled={!supports('wave_height')} value={Number.isFinite(scenario.wave_height) ? scenario.wave_height : ''} onChange={event => updateScenario('wave_height', event.target.valueAsNumber)}/></label>
+                      <label>Задержка поезда, ч<input type="number" min="0" max="720" step="0.1" required disabled={!supports('rail_delay')} value={Number.isFinite(scenario.rail_delay) ? scenario.rail_delay : ''} onChange={event => updateScenario('rail_delay', event.target.valueAsNumber)}/></label>
                       <label>Маршрут для прогноза<select required disabled={!supports('route_id') || !routes.length} value={scenario.route_id} onChange={event => updateScenario('route_id', event.target.value)}>{routes.map(route => <option key={route.route_id} value={route.route_id}>{route.name}</option>)}</select></label>
                     </div>
                     {supports('weather_severity') && <><label>Погодная оценка <b>{scenario.weather_severity} / 5</b><input type="range" min="0" max="5" step="0.1" value={scenario.weather_severity} onChange={event => updateScenario('weather_severity', Number(event.target.value))}/></label><div className="range-labels"><span>Благоприятная</span><span>Экстремальная</span></div></>}
                     <label>Загрузка порта <b>{scenario.port_load}%</b><input type="range" min="0" max="100" value={scenario.port_load} onChange={event => updateScenario('port_load', Number(event.target.value))}/></label>
-                    <button className="primary" disabled={busy || !online || unsupportedRequired.length > 0 || (capabilities.required.includes('route_id') && !routes.length)}>{busy ? 'Расчёт…' : 'Рассчитать сценарий'}</button>
+                    <button className="primary" disabled={busy || !online || !context?.provider.configured || unsupportedRequired.length > 0 || (capabilities.required.includes('route_id') && !routes.length)}>{busy ? 'Расчёт…' : 'Получить AI-прогноз'}</button>
                   </fieldset>
                 </form>
                 {forecast && result && <>
-                  <div className={`result ${result.risk}`} role="status"><span>Прогноз дополнительной задержки</span><strong>{hours(result.delay_hours)}</strong><p>Риск: {labels[result.risk]}</p><ul>{result.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul><div className="model-info"><span>Модель: {result.model || 'не указана сервером'}</span><span>Метод: {result.method || 'не указан сервером'}</span><span>Версия: {result.model_version || 'не указана'}</span></div></div>
+                  <div className={`result ${result.risk}`} role="status"><span>Прогноз дополнительной задержки</span><strong>{hours(result.delay_hours)}</strong><p>Риск: {labels[result.risk]}</p><ul>{result.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul><div className="model-info"><span>Модель: {result.model || 'не указана сервером'}</span><span>Метод: {result.method || 'не указан сервером'}</span><span>Версия: {result.model_version || 'не указана'}</span><span>Контекст: {result.source_snapshot_id}</span><span>Промпт: {result.prompt_version}</span><span>Маршрут: {result.route_id}</span></div></div>
                   <p className="footnote">Рассчитано для: {Object.entries(forecast.request).filter(([field]) => field !== 'shipment_id').map(([field, value]) => `${({weather_severity:'погодная оценка', port_load:'загрузка порта', ...fieldLabels})[field] || field}: ${value}`).join(' · ')}</p>
                   {changed && <p className="notice">Условия изменены. Ниже остаётся результат предыдущего расчёта — запустите сценарий заново.</p>}
                   <div className="section-title forecast-routes"><h3>ETA после расчёта</h3><span>Сравнение с состоянием до запроса</span></div>
