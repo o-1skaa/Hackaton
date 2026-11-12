@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
+from app.services.gigachat import complete
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 DATA = Path(__file__).resolve().parents[2] / 'data'
-PROMPT_VERSION = 'caspian-gemini-v2'
+PROMPT_VERSION = 'caspian-gigachat-v2'
 
 
 class PredictionUnavailable(Exception):
@@ -26,15 +27,15 @@ class ModelOutput(BaseModel):
 
 
 def provider_status() -> dict:
-    return {'provider': 'gemini', 'model': os.getenv('GEMINI_MODEL', 'gemini-3.8-flash'),
-            'configured': bool(os.getenv('GEMINI_API_KEY', '').strip()),
+    return {'provider': 'gigachat', 'model': os.getenv('GIGACHAT_MODEL', 'GigaChat-2'),
+            'configured': bool(os.getenv('GIGACHAT_CREDENTIALS', '').strip()),
             'method': 'external_llm', 'prompt_version': PROMPT_VERSION}
 
 
 def predict(*, shipment: dict, source: dict, route_id: str = 'main') -> dict:
     status = provider_status()
     if not status['configured']:
-        raise PredictionUnavailable('Задайте GEMINI_API_KEY в backend/.env и перезапустите сервер. Прогноз без AI API отключён.')
+        raise PredictionUnavailable('Задайте GIGACHAT_CREDENTIALS в backend/.env и перезапустите сервер. Прогноз без AI API отключён.')
     conditions = source['conditions']
     with (DATA / 'history.csv').open(encoding='utf-8-sig') as file:
         history = list(csv.DictReader(file))
@@ -53,29 +54,19 @@ def predict(*, shipment: dict, source: dict, route_id: str = 'main') -> dict:
         'Give 1–6 short reasons in Russian tied to evidence, acknowledging missing evidence.'
     )
     body = {
-        'systemInstruction': {'parts': [{'text': instruction}]},
-        'contents': [{'role': 'user', 'parts': [{'text': json.dumps(context, ensure_ascii=False)}]}],
-        'generationConfig': {
-            'maxOutputTokens': 8192, 'responseMimeType': 'application/json',
-            'responseSchema': {
-                'type': 'OBJECT', 'properties': {
-                    'delay_hours': {'type': 'NUMBER'},
-                    'risk': {'type': 'STRING', 'enum': ['low', 'medium', 'high']},
-                    'reasons': {'type': 'ARRAY', 'items': {'type': 'STRING'}},
-                }, 'required': ['delay_hours', 'risk', 'reasons'],
-            },
-        },
+        'model': status['model'],
+        'messages': [
+            {'role': 'system', 'content': instruction + ' Return only a JSON object, without markdown or additional text.'},
+            {'role': 'user', 'content': json.dumps(context, ensure_ascii=False)},
+        ],
+        'temperature': 0.1, 'max_tokens': 2048, 'stream': False,
     }
     try:
-        with httpx.Client(timeout=httpx.Timeout(45, connect=10)) as client:
-            response = client.post(f"https://generativelanguage.googleapis.com/v1beta/models/{status['model']}:generateContent",
-                                   headers={'x-goog-api-key': os.environ['GEMINI_API_KEY']}, json=body)
-        response.raise_for_status()
-        envelope = response.json()
-        choice = envelope['candidates'][0]
-        if choice.get('finishReason') != 'STOP':
+        envelope = complete(body)
+        choice = envelope['choices'][0]
+        if choice.get('finish_reason') != 'stop':
             raise ValueError('Incomplete model response')
-        content = ''.join(part['text'] for part in choice['content']['parts'] if not part.get('thought', False) and 'text' in part)
+        content = choice['message']['content']
         result = ModelOutput.model_validate_json(content)
         if any(not reason.strip() or len(reason) > 1000 for reason in result.reasons):
             raise ValueError('Invalid reasons')
@@ -84,13 +75,14 @@ def predict(*, shipment: dict, source: dict, route_id: str = 'main') -> dict:
             raise ValueError('Inconsistent risk')
     except httpx.TimeoutException as exc:
         raise PredictionUnavailable('AI API не ответил вовремя. Повторите запрос.', 504) from exc
-    except httpx.HTTPError as exc:
-        raise PredictionUnavailable('AI API недоступен. Проверьте ключ, баланс и доступ к Gemini.') from exc
+    except (httpx.HTTPError, OSError) as exc:
+        raise PredictionUnavailable('AI API недоступен. Проверьте ключ авторизации, scope, баланс, сертификаты и доступ к GigaChat.') from exc
     except (ValueError, KeyError, IndexError, TypeError, AttributeError, ValidationError) as exc:
         raise PredictionUnavailable('AI API вернул некорректный прогноз. Повторите запрос.', 502) from exc
-    version = envelope.get('modelVersion')
+    version = envelope.get('model')
     if not isinstance(version, str) or not version.strip():
         version = status['model']
     return {**result.model_dump(), 'model': status['model'], 'model_version': version,
             'method': 'external_llm', 'prompt_version': PROMPT_VERSION, 'route_id': route_id,
             'synthetic': True, 'source_snapshot_id': source['snapshot_id'], 'conditions': conditions}
+

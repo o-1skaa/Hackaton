@@ -129,7 +129,7 @@ def predict(payload: PredictRequest) -> dict:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     ROUTE_PREDICTIONS.setdefault(payload.shipment_id, {})[payload.route_id] = result["delay_hours"]
     LATEST_PREDICTIONS[payload.shipment_id] = result["delay_hours"]
-    add_event(payload.shipment_id, "prediction_updated", f"Gemini / {result['model']} / {payload.route_id}: {result['delay_hours']} ч; сводка {result['source_snapshot_id']}")
+    add_event(payload.shipment_id, "prediction_updated", f"GigaChat / {result['model']} / {payload.route_id}: {result['delay_hours']} ч; сводка {result['source_snapshot_id']}")
     return result
 
 
@@ -199,3 +199,4 @@ def frontend_icon():
     if icon.is_file():
         return FileResponse(icon)
     raise HTTPException(status_code=404, detail="Icon not found")
+

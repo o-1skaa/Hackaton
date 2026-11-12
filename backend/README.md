@@ -31,13 +31,16 @@ CORS разрешает `http://localhost:5173` и `http://127.0.0.1:5173`, ме
 
 ## Прогноз
 
-`app/services/prediction.py` вызывает нативный Gemini REST API:
-`https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`.
-Ключ передаётся в заголовке `x-goog-api-key` из `GEMINI_API_KEY`, модель берётся из
-`GEMINI_MODEL` (по умолчанию `gemini-3.8-flash`). Используются `systemInstruction`,
-`contents` и `generationConfig` с JSON Schema.
-Документация: [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output).
-Настройка: [общий README](../README.md#подключить-gemini).
+`app/services/prediction.py` вызывает GigaChat через `services/gigachat.py`:
+`POST https://api.giga.chat/v1/chat/completions`, сообщения system/user.
+Модель: `GIGACHAT_MODEL` (по умолчанию `GigaChat-2`).
+`GIGACHAT_CREDENTIALS` — ключ авторизации: Basic OAuth с UUID RqUID на
+`https://ngw.devices.sberbank.ru:9443/api/v2/oauth`, scope из `GIGACHAT_SCOPE`.
+Токен кешируется в памяти с блокировкой, обновляется за 60 секунд до истечения,
+после 401 обновляется с одним повтором запроса. Оба endpoint проверяют TLS;
+`GIGACHAT_CA_BUNDLE_FILE` добавляет корневой PEM к стандартным CA.
+[Авторизация](https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/gigachat-api).
+Настройка: [общий README](../README.md#подключить-gigachat).
 
 `POST /api/predict` принимает только `shipment_id` и `route_id`. Любые условия в теле
 запрещены (422), включая старые `weather_severity` и `port_load`.
@@ -45,8 +48,8 @@ CORS разрешает `http://localhost:5173` и `http://127.0.0.1:5173`, ме
 выбранный маршрут и данные о происхождении сводки. Собственная модель не обучается,
 локального fallback нет. Риск валидируется по порогам <2 / <4 / >=4 ч.
 
-Ответ Gemini разбирается из `candidates[].content.parts[].text`; внутренние thought
-части пропускаются. Нужен `finishReason: STOP`. Пустые/заблокированные/оборванные ответы,
+Ответ GigaChat разбирается из `choices[0].message.content`. Нужен `finish_reason: stop`.
+JSON запрашивается инструкцией и строго проверяется Pydantic на сервере. Пустые/заблокированные/оборванные ответы,
 невалидный JSON, нечисловая задержка, NaN, выход за 0–720 ч и несовместимый риск
 отклоняются. 503 — нет ключа/ошибка провайдера; 504 — тайм-аут; 502 — плохой ответ.
 Секрет и сырой ответ провайдера не передаются клиенту. История не содержит физических
@@ -93,3 +96,4 @@ FastAPI lifespan вызывает `services/data_sources.py`. Пул наблю�
 ## Работа команды
 
 Backend отвечает за API, модели и интеграцию. Разработчик прогноза — за `services/prediction.py`, `services/routing.py` и тесты алгоритмов. При изменении сигнатуры функции обновляйте вызывающий код и запускайте API-тесты. Изменения JSON согласовывайте через контракт и Swagger.
+

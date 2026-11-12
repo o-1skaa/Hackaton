@@ -7,14 +7,14 @@ import app.main as main
 
 @pytest.fixture(autouse=True)
 def isolated_state(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "test-only-key")
+    monkeypatch.setenv("GIGACHAT_CREDENTIALS", "test-only-key")
     original_post = httpx.Client.post
     def model_response(self, url, **kwargs):
         if str(url).startswith("/"):
             return original_post(self, url, **kwargs)
         return httpx.Response(200, request=httpx.Request('POST', url), json={
-            'modelVersion':'test-gemini', 'candidates':[{'finishReason':'STOP', 'content':{'parts':[{'text':json.dumps({
-                'delay_hours':6.5, 'risk':'high', 'reasons':['Демонстрационный ответ API']})}]}}]})
+            'model':'test-gigachat', 'choices':[{'finish_reason':'stop', 'message':{'content':json.dumps({
+                'delay_hours':6.5, 'risk':'high', 'reasons':['Демонстрационный ответ API']})}}]})
     monkeypatch.setattr(httpx.Client, 'post', model_response)
     monkeypatch.setattr(main, "ROUTE_PREDICTIONS", {})
     monkeypatch.setattr(main, "DEMO_API_KEY", "test-only-key")
@@ -154,8 +154,8 @@ def test_context_is_authoritative(client):
     context = client.get('/api/prediction-context/SCT-001').json()
     assert context['synthetic'] is True
     assert context['provider']['configured'] is True
-    assert context['provider']['provider'] == 'gemini'
-    assert context['provider']['model'] == 'gemini-3.8-flash'
+    assert context['provider']['provider'] == 'gigachat'
+    assert context['provider']['model'] == 'GigaChat-2'
     assert context['observation_id']
     result = client.post('/api/predict', json={'shipment_id':'SCT-001','route_id':'alternative'})
     assert result.status_code == 200
@@ -168,7 +168,7 @@ def test_context_is_authoritative(client):
 
 
 def test_provider_failure_does_not_mutate_state(client, monkeypatch):
-    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    monkeypatch.delenv('GIGACHAT_CREDENTIALS', raising=False)
     result = client.post('/api/predict', json={'shipment_id':'SCT-001'})
     assert result.status_code == 503
     assert not main.EVENTS['SCT-001']
@@ -189,3 +189,4 @@ def test_snapshot_stays_fixed_until_restart(client):
         second = restarted.get('/api/prediction-context/SCT-001').json()
     assert first['snapshot_id'] != second['snapshot_id']
     assert first['conditions'] != second['conditions']
+

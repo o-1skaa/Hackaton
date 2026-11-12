@@ -12,3 +12,10 @@ def isolated_network_environment(monkeypatch):
 def isolated_runtime_snapshots(tmp_path, monkeypatch):
     from app.services import data_sources
     monkeypatch.setattr(data_sources, 'RUNTIME_PATH', tmp_path / 'source_snapshots.json')
+
+
+
+@pytest.fixture(autouse=True)
+def mock_oauth_for_prediction_tests(monkeypatch):
+    from app.services import gigachat
+    monkeypatch.setattr(gigachat, 'get_token', lambda *args, **kwargs: 'test-access-token')
