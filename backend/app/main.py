@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -10,11 +11,14 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.data import SHIPMENTS
-from app.schemas import PredictRequest, PredictResponse, PreclearanceRequest, PreclearanceResponse
-from app.services.prediction import predict_delay
+from app.schemas import (
+    PredictRequest, PredictResponse, PreclearanceRequest, PreclearanceResponse,
+    HealthResponse, ShipmentSummary, ShipmentDetail, Event, Route, PreclearanceCheck,
+)
+from app.services.prediction import predict as make_prediction
 from app.services.routing import calculate_routes
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 DEMO_API_KEY = os.getenv("DEMO_API_KEY", "demo-local-key")
 
 app = FastAPI(
@@ -65,12 +69,12 @@ def add_event(shipment_id: str, event: str, details: str) -> None:
     })
 
 
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse)
 def health() -> dict:
     return {"status": "ok", "mode": "synthetic-demo"}
 
 
-@app.get("/api/shipments")
+@app.get("/api/shipments", response_model=list[ShipmentSummary])
 def list_shipments() -> list[dict]:
     return [
         {
@@ -85,7 +89,7 @@ def list_shipments() -> list[dict]:
     ]
 
 
-@app.get("/api/shipments/{shipment_id}")
+@app.get("/api/shipments/{shipment_id}", response_model=ShipmentDetail)
 def get_shipment(shipment_id: str) -> dict:
     shipment = get_shipment_or_404(shipment_id)
     related_checks = [check for check in PRECLEARANCE_CHECKS.values() if check["shipment_id"] == shipment_id]
@@ -100,8 +104,8 @@ def get_shipment(shipment_id: str) -> dict:
 
 @app.post("/api/predict", response_model=PredictResponse)
 def predict(payload: PredictRequest) -> dict:
-    shipment = get_shipment_or_404(payload.shipment_id)
-    result = predict_delay(shipment, payload.weather_severity, payload.port_load)
+    get_shipment_or_404(payload.shipment_id)
+    result = make_prediction(payload.weather_severity, payload.port_load)
     LATEST_PREDICTIONS[payload.shipment_id] = result["delay_hours"]
     add_event(payload.shipment_id, "prediction_updated", f"Задержка: {result['delay_hours']} ч")
     return result
@@ -116,7 +120,7 @@ def preclearance(payload: PreclearanceRequest, x_api_key: str | None = Header(de
     check_id = f"CHK-{uuid4().hex[:8].upper()}"
     add_event(payload.shipment_id, "submitted", f"Тестовый пакет отправлен; ID: {check_id}")
 
-    doc_types = {doc.type.lower() for doc in payload.documents}
+    doc_types = {doc.type.strip().lower() for doc in payload.documents}
     required = {"invoice", "packing_list"}
     missing = sorted(required - doc_types)
     reasons = [f"Отсутствует документ: {name}" for name in missing]
@@ -134,7 +138,7 @@ def preclearance(payload: PreclearanceRequest, x_api_key: str | None = Header(de
     return {"status": status, "check_id": check_id, "reasons": reasons}
 
 
-@app.get("/api/preclearance/{check_id}")
+@app.get("/api/preclearance/{check_id}", response_model=PreclearanceCheck)
 def get_check(check_id: str) -> dict:
     check = PRECLEARANCE_CHECKS.get(check_id)
     if check is None:
@@ -142,13 +146,13 @@ def get_check(check_id: str) -> dict:
     return check
 
 
-@app.get("/api/shipments/{shipment_id}/events")
+@app.get("/api/shipments/{shipment_id}/events", response_model=list[Event])
 def shipment_events(shipment_id: str) -> list[dict]:
     get_shipment_or_404(shipment_id)
     return EVENTS[shipment_id]
 
 
-@app.get("/api/routes/{shipment_id}")
+@app.get("/api/routes/{shipment_id}", response_model=list[Route])
 def routes(shipment_id: str) -> list[dict]:
     shipment = get_shipment_or_404(shipment_id)
     return calculate_routes(shipment, LATEST_PREDICTIONS.get(shipment_id, 0))

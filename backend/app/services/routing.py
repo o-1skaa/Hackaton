@@ -5,6 +5,7 @@
 
 
 def calculate_routes(shipment: dict, predicted_delay_hours: float) -> list[dict]:
+    # Приоритет демо: меньшие выбросы, пока задержка не достигла 5 часов.
     alt_recommended = predicted_delay_hours >= 5
     return [
         {
@@ -14,7 +15,10 @@ def calculate_routes(shipment: dict, predicted_delay_hours: float) -> list[dict]
             "eta_hours": round(72 + predicted_delay_hours, 1),
             "co2_kg": 540.0,
             "recommended": not alt_recommended,
-            "reason": "Основной маршрут",
+            "reason": (
+                "Меньше CO₂ и расстояние; задержка ниже порога 5 ч"
+                if not alt_recommended else "Задержка достигла порога 5 ч"
+            ),
         },
         {
             "route_id": "alternative",

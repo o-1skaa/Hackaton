@@ -1,14 +1,16 @@
+"""Демо-прогноз: среднее пяти ближайших записей синтетической истории."""
 
 import csv
+import math
 from pathlib import Path
 
 HISTORY_PATH = Path(__file__).resolve().parents[2] / "data" / "history.csv"
 
 
-def predict_delay(weather_severity: int, port_load: int) -> float:
-    if not 0 <= weather_severity <= 5:
+def predict_delay(weather_severity: float, port_load: float) -> float:
+    if not math.isfinite(weather_severity) or not 0 <= weather_severity <= 5:
         raise ValueError("Погода должна быть от 0 до 5")
-    if not 0 <= port_load <= 100:
+    if not math.isfinite(port_load) or not 0 <= port_load <= 100:
         raise ValueError("Загрузка порта должна быть от 0 до 100")
 
     neighbors = []
@@ -20,6 +22,9 @@ def predict_delay(weather_severity: int, port_load: int) -> float:
             weather = int(row["weather_severity"])
             load = int(row["port_load"])
             delay = float(row["actual_delay_hours"])
+
+            if not (0 <= weather <= 5 and 0 <= load <= 100 and math.isfinite(delay) and delay >= 0):
+                raise ValueError("Некорректная запись истории перевозок")
 
             distance = 20 * abs(weather_severity - weather) + abs(port_load - load)
             neighbors.append((distance, delay))
@@ -43,7 +48,7 @@ def get_risk(delay_hours: float) -> str:
     return "high"
 
 
-def get_reasons(weather_severity: int, port_load: int) -> list[str]:
+def get_reasons(weather_severity: float, port_load: float) -> list[str]:
     reasons = []
 
     if weather_severity >= 3:
@@ -58,7 +63,7 @@ def get_reasons(weather_severity: int, port_load: int) -> list[str]:
     return reasons
 
 
-def predict(weather_severity: int, port_load: int) -> dict:
+def predict(weather_severity: float, port_load: float) -> dict:
     delay = predict_delay(weather_severity, port_load)
 
     return {
