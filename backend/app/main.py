@@ -6,7 +6,8 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -156,3 +157,24 @@ def shipment_events(shipment_id: str) -> list[dict]:
 def routes(shipment_id: str) -> list[dict]:
     shipment = get_shipment_or_404(shipment_id)
     return calculate_routes(shipment, LATEST_PREDICTIONS.get(shipment_id, 0))
+
+
+# Register after API routes; missing API endpoints must remain JSON 404s.
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if FRONTEND_DIST.is_dir():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+
+
+@app.get("/", include_in_schema=False)
+def frontend_index():
+    if (FRONTEND_DIST / "index.html").is_file():
+        return FileResponse(FRONTEND_DIST / "index.html")
+    return JSONResponse(status_code=503, content={"error": "Frontend is not built. Run python start.py from the repository root."})
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def frontend_icon():
+    icon = FRONTEND_DIST / "favicon.svg"
+    if icon.is_file():
+        return FileResponse(icon)
+    raise HTTPException(status_code=404, detail="Icon not found")
