@@ -22,3 +22,5 @@
 .route-map .leaflet-control-attribution{font-size:10px}
 .route-map .leaflet-control-attribution a{display:inline}
 @media(max-width:600px){.route-map{height:340px}}
+
+.add-shipment {padding:18px;margin-bottom:20px}.shipment-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px} table {width:100%;border-collapse:collapse} td,th {text-align:left;padding:8px;border-bottom:1px solid #dde3e6}.leaflet-tooltip {font-family:inherit;font-size:12px}

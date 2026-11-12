@@ -1,24 +1,34 @@
-"""Random demo scenarios. No AI, training, or outbound requests."""
-from random import choice
+"""Deterministic nearest-neighbour forecast with a fixed held-out evaluation."""
+import csv
+from functools import lru_cache
+from pathlib import Path
+from statistics import mean
 
-SCENARIOS = (
-    ("on-time", 0.0, "Задержек нет: обработка груза идёт по расписанию."),
-    ("loading", 1.5, "Очередь на погрузку в транзитном порту."),
-    ("documents", 3.0, "Ожидание проверки сопроводительных документов."),
-    ("rail", 4.5, "Поздняя подача железнодорожного состава."),
-    ("wind", 6.0, "Сильный ветер: временно приостановлены портовые операции."),
-    ("terminal", 8.0, "Перегрузка контейнерного терминала."),
-    ("inspection", 12.0, "Дополнительный таможенный досмотр груза."),
-)
+@lru_cache
+def history():
+    with (Path(__file__).resolve().parents[2] / 'data/history.csv').open() as stream:
+        rows = [{k: float(v) for k, v in row.items()} for row in csv.DictReader(stream)]
+    return rows[:160], rows[160:]
 
+def estimate(conditions, train):
+    nearest = sorted(train, key=lambda row: ((row['weather_severity']-conditions['weather_severity'])/5)**2 + ((row['port_load']-conditions['port_load'])/100)**2)[:8]
+    return mean(row['actual_delay_hours'] for row in nearest)
 
-def provider_status() -> dict:
-    return {"provider": "local", "configured": True, "method": "demo_random"}
+def metrics():
+    train, test = history()
+    baseline = mean(row['actual_delay_hours'] for row in train)
+    return {'train_count': len(train), 'test_count': len(test), 'split': 'Первые 160 строк для обучения, последние 40 для проверки',
+            'model_mae_hours': round(mean(abs(estimate(row, train)-row['actual_delay_hours']) for row in test), 3),
+            'baseline_mae_hours': round(mean(abs(baseline-row['actual_delay_hours']) for row in test), 3),
+            'baseline_delay_hours': round(baseline, 3), 'synthetic': True,
+            'scope': 'Ошибка портовой задержки на синтетической истории. Поезд и ожидание парома считаются отдельно по расписанию.'}
 
+def provider_status():
+    return {'provider': 'local', 'configured': True, 'method': 'historical_knn'}
 
-def predict(*, shipment: dict, source: dict, route_id: str = "main") -> dict:
-    scenario_id, delay, reason = choice(SCENARIOS)
-    return {"delay_hours": delay,
-            "risk": "low" if delay < 2 else "medium" if delay < 4 else "high",
-            "reasons": [reason], "scenario_id": scenario_id, "method": "demo_random",
-            "route_id": route_id, "synthetic": True}
+def predict(*, shipment, source, route_id='main'):
+    conditions = source['conditions']
+    delay = round(estimate(conditions, history()[0]), 2)
+    return {'delay_hours': delay, 'risk': 'low' if delay < 2 else 'medium' if delay < 4 else 'high',
+            'reasons': [f"По 8 похожим наблюдениям: погода {conditions['weather_severity']}/5, загрузка порта {conditions['port_load']}%."],
+            'method': 'historical_knn', 'route_id': route_id, 'synthetic': True, 'metrics': metrics()}

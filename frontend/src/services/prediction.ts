@@ -7,7 +7,7 @@ export function buildPredictionRequest(shipmentId: string, routeId: string) {
 }
 
 export function validatePrediction(result: Prediction): Prediction {
-  if (!Number.isFinite(result.delay_hours) || result.delay_hours < 0 || !['low', 'medium', 'high'].includes(result.risk) || result.method !== 'demo_random' || !result.scenario_id || !['main', 'alternative'].includes(result.route_id) || !Array.isArray(result.reasons) || result.reasons.some(reason => typeof reason !== 'string')) {
+  if (!Number.isFinite(result.delay_hours) || result.delay_hours < 0 || !['low', 'medium', 'high'].includes(result.risk) || result.method !== 'historical_knn' || !result.metrics || !['main', 'alternative'].includes(result.route_id) || !Array.isArray(result.reasons) || result.reasons.some(reason => typeof reason !== 'string')) {
     throw new Error('Сервер вернул некорректный прогноз')
   }
   return result

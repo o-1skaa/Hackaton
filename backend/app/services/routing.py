@@ -1,37 +1,49 @@
-"""Временные синтетические варианты маршрута. Разработчик C заменяет реализацию.
+"""One geometry per leg supplies map points, length and emissions."""
+from math import asin, ceil, cos, radians, sin, sqrt
+from datetime import datetime, timedelta, timezone
 
-Значения расстояний, ETA и CO₂e являются только примером, не реальными расчётами.
-"""
+FACTORS = {'rail': 0.022, 'ferry': 0.016, 'road': 0.08}  # kg CO2e / tonne-km, illustrative assumptions
+POINTS = {'Астрахань': (46.35,48.04), 'Махачкала': (42.98,47.50), 'Баку': (40.41,49.87), 'Астара': (38.45,48.87), 'Казвин': (36.27,50.00), 'Кум': (34.64,50.88), 'Йезд': (31.90,54.37), 'Сирджан': (29.60,55.00), 'Энзели': (37.47,49.46), 'Тегеран': (35.69,51.39), 'Исфахан': (32.65,51.68), 'Керман': (30.28,57.08), 'Бендер-Аббас': (27.18,56.27)}
 
+def distance(points):
+    total = 0
+    for (a,b),(c,d) in zip(points, points[1:]):
+        x,y = radians(c-a),radians(d-b)
+        total += 6371*2*asin(sqrt(sin(x/2)**2+cos(radians(a))*cos(radians(c))*sin(y/2)**2))
+    return round(total, 1)
 
-def calculate_routes(shipment: dict, predicted_delays: dict[str, float]) -> list[dict]:
-    # Без прогноза задержка маршрута равна нулю, это базовый ETA, демонстрационная оценка.
-    # Приоритет демо: меньшие выбросы, пока задержка не достигла 5 часов.
-    main_delay = predicted_delays.get("main", 0)
-    alternative_delay = predicted_delays.get("alternative", 0)
-    alt_recommended = 70 + alternative_delay < 72 + main_delay and main_delay >= 5
-    return [
-        {
-            "route_id": "main",
-            "waypoints": [(46.35, 48.04), (42.98, 47.50), (37.47, 49.46), (35.69, 51.39), (32.65, 51.68), (30.28, 57.08), (27.18, 56.27)],
-            "name": "Основной (демо): Астрахань → Махачкала → Бендер-Аббас",
-            "distance_km": 1800.0,
-            "eta_hours": round(72 + main_delay, 1),
-            "co2_kg": 540.0,
-            "recommended": not alt_recommended,
-            "reason": (
-                "Меньше CO₂; при задержке от 5 ч сравниваются ETA"
-                if not alt_recommended else "Основной маршрут задерживается; альтернатива быстрее"
-            ),
-        },
-        {
-            "route_id": "alternative",
-            "waypoints": [(46.35, 48.04), (44.60, 49.20), (40.41, 49.87), (38.45, 48.87), (36.27, 50.00), (34.64, 50.88), (31.90, 54.37), (29.60, 55.00), (27.18, 56.27)],
-            "name": "Альтернативный (демо): Астрахань → Баку → Бендер-Аббас",
-            "distance_km": 1950.0,
-            "eta_hours": round(70 + alternative_delay, 1),
-            "co2_kg": 620.0,
-            "recommended": alt_recommended,
-            "reason": "Меньше ETA при задержке основного маршрута" if alt_recommended else "Резервный маршрут",
-        },
-    ]
+def connection(rail_delay=0, port_delay=0):
+    ready = 12 + rail_delay + port_delay + 1  # rail arrival + preparation
+    departure = 14 + max(0, ceil((ready-14)/24))*24
+    return {'planned_train_arrival_hours': 12, 'actual_train_arrival_hours': round(12+rail_delay,2),
+            'ready_hours': round(ready,2), 'planned_ferry_departure_hours': 14,
+            'ferry_departure_hours': departure, 'missed_ferry': departure>14,
+            'wait_hours': round(departure-ready,2), 'delay_hours': departure-14,
+            'interval_hours': 24}
+
+def calculate_routes(shipment, predicted_delays):
+    weight = shipment.get('weight_tonnes',20)
+    rail_delay = shipment.get('conditions',{}).get('rail_delay',0)
+    output = []
+    for route_id, transit in [('main','Махачкала'),('alternative','Баку')]:
+        definitions = [('rail',['Астрахань',transit],12), ('ferry',[transit,'Энзели'],18), ('road',['Энзели','Тегеран','Исфахан','Керман','Бендер-Аббас'],42)] if route_id == 'main' else [('rail',['Астрахань','Махачкала','Баку'],20), ('road',['Баку','Астара','Казвин','Кум','Йезд','Сирджан','Бендер-Аббас'],50)]
+        legs = []
+        for mode,names,duration in definitions:
+            points = [POINTS[name] for name in names]
+            km = distance(points)
+            legs.append({'mode':mode,'stops':names,'waypoints':points,'distance_km':km,'duration_hours':duration,
+                         'factor_kg_per_tkm':FACTORS[mode], 'co2_kg':round(km*weight*FACTORS[mode],2)})
+        transfer = connection(rail_delay, predicted_delays.get(route_id,0))
+        transfer['applicable'] = route_id == 'main'
+        eta = round(sum(leg['duration_hours'] for leg in legs) + (2+transfer['delay_hours'] if route_id == 'main' else rail_delay+predicted_delays.get(route_id,0)),2)
+        start = datetime.fromisoformat(shipment.get('departure_at','2026-11-12T00:00:00+00:00').replace('Z','+00:00'))
+        output.append({'route_id':route_id,'name':f'Астрахань → {transit} → Энзели → Бендер-Аббас' if route_id == 'main' else 'Астрахань → Баку → Бендер-Аббас (сухопутный)',
+            'waypoints': [point for i,leg in enumerate(legs) for point in leg['waypoints'][int(i>0):]],
+            'distance_km':round(sum(leg['distance_km'] for leg in legs),1), 'eta_hours':eta,
+            'eta_at':(start+timedelta(hours=eta)).isoformat(), 'co2_kg':round(sum(leg['co2_kg'] for leg in legs),2),
+            'recommended':False,'reason':'','legs':legs,'transfer':transfer})
+    best = min(output,key=lambda r:(r['eta_hours'],r['co2_kg']))
+    for route in output:
+        route['recommended'] = route is best
+        route['reason'] = 'Минимальный ETA, при равенстве меньше CO₂e' if route is best else 'Резервный маршрут'
+    return output

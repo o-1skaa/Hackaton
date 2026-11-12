@@ -1,36 +1,30 @@
 import pytest
-from app.data import SHIPMENTS
-from app.services import prediction
-from app.services.routing import calculate_routes
+from app.services.prediction import metrics, predict
+from app.services.routing import calculate_routes, connection, distance
 
+def test_prediction_is_repeatable_and_responds_to_conditions():
+    low = {'conditions':{'weather_severity':0,'port_load':20}}
+    high = {'conditions':{'weather_severity':5,'port_load':100}}
+    assert predict(shipment={},source=low) == predict(shipment={},source=low)
+    assert predict(shipment={},source=high)['delay_hours'] > predict(shipment={},source=low)['delay_hours']
 
-@pytest.mark.parametrize('scenario', prediction.SCENARIOS)
-def test_each_random_scenario_has_consistent_delay_and_reason(monkeypatch, scenario):
-    monkeypatch.setattr(prediction, 'choice', lambda values: scenario)
-    result = prediction.predict(shipment=SHIPMENTS['SCT-001'], source={}, route_id='alternative')
-    assert result['delay_hours'] == scenario[1]
-    assert result['reasons'] == [scenario[2]]
-    assert result['risk'] == ('low' if scenario[1] < 2 else 'medium' if scenario[1] < 4 else 'high')
-    assert result['route_id'] == 'alternative'
-    assert result['method'] == 'demo_random'
+def test_fixed_holdout_beats_training_mean():
+    report = metrics()
+    assert report['train_count'] == 160 and report['test_count'] == 40
+    assert report['model_mae_hours'] < report['baseline_mae_hours']
 
+@pytest.mark.parametrize('rail,port,missed,departure', [(0,0,False,14),(1,0,False,14),(1.01,0,True,38),(4,3,True,38),(50,0,True,86)])
+def test_connection_boundaries(rail,port,missed,departure):
+    result = connection(rail,port)
+    assert result['missed_ferry'] == missed
+    assert result['ferry_departure_hours'] == departure
+    assert result['wait_hours'] >= 0
 
-def test_route_delay_applies_only_to_selected_route():
-    routes = calculate_routes({}, {'alternative':12})
-    assert routes[0]['eta_hours'] == 72
-    assert routes[1]['eta_hours'] == 82
-    assert routes[0]['recommended']
-    routes = calculate_routes({}, {'main':8, 'alternative':20})
-    assert routes[0]['recommended']
-    assert routes[1]['eta_hours'] == 90
-
-
-def test_map_routes_have_shared_endpoints_and_distinct_transit():
-    main, alternative = calculate_routes({}, {})
-    assert main['waypoints'][0] == alternative['waypoints'][0]
-    assert main['waypoints'][-1] == alternative['waypoints'][-1]
-    assert (42.98, 47.50) in main['waypoints']
-    assert (40.41, 49.87) in alternative['waypoints']
-    assert main['waypoints'] != alternative['waypoints']
-    for route in (main, alternative):
-        assert all(-90 <= lat <= 90 and -180 <= lng <= 180 for lat, lng in route['waypoints'])
+def test_route_totals_share_map_geometry_and_mass_scaling():
+    for first, second in zip(calculate_routes({'weight_tonnes':20},{}),calculate_routes({'weight_tonnes':40},{})):
+        assert first['distance_km'] == round(sum(leg['distance_km'] for leg in first['legs']),1)
+        assert first['co2_kg'] == round(sum(leg['co2_kg'] for leg in first['legs']),2)
+        assert second['co2_kg'] == pytest.approx(first['co2_kg']*2,abs=.03)
+        for leg in first['legs']:
+            assert leg['distance_km'] == distance(leg['waypoints'])
+            assert leg['co2_kg'] == round(leg['distance_km']*20*leg['factor_kg_per_tkm'],2)

@@ -5,8 +5,6 @@ import app.main as main
 
 @pytest.fixture(autouse=True)
 def isolated_state(monkeypatch):
-    from app.services import prediction
-    monkeypatch.setattr(prediction, "choice", lambda scenarios: scenarios[4])
     monkeypatch.setattr(main, "ROUTE_PREDICTIONS", {})
     monkeypatch.setattr(main, "DEMO_API_KEY", "test-only-key")
     monkeypatch.setattr(main, "EVENTS", {sid: [] for sid in main.SHIPMENTS})
@@ -42,7 +40,7 @@ def test_prediction_uses_demo_scenario(client):
     assert first.json() == second.json()
     assert first.json()["delay_hours"] >= 0
     assert len(first.json()["reasons"]) >= 1
-    assert client.get("/api/routes/SCT-001").json()[1]["recommended"] is True
+    assert sum(r["recommended"] for r in client.get("/api/routes/SCT-001").json()) == 1
 
 
 def test_preclearance_requires_demo_key(client):
@@ -97,8 +95,7 @@ def test_prediction_updates_detail_and_events(client):
         "shipment_id": "SCT-001",
     })
     assert result.status_code == 200
-    assert result.json()["delay_hours"] == 6.0
-    assert result.json()["risk"] == "high"
+    assert result.json()["delay_hours"] >= 0
     detail = client.get("/api/shipments/SCT-001").json()
     assert detail["last_delay_hours"] == result.json()["delay_hours"]
     assert client.get("/api/shipments/SCT-001/events").json()[-1]["event"] == "prediction_updated"
@@ -149,10 +146,10 @@ def test_context_is_authoritative(client):
     assert context['observation_id']
     result = client.post('/api/predict', json={'shipment_id':'SCT-001','route_id':'alternative'})
     assert result.status_code == 200
-    assert result.json()['method'] == 'demo_random'
+    assert result.json()['method'] == 'historical_knn'
     routes = client.get('/api/routes/SCT-001').json()
-    assert routes[0]['eta_hours'] == 72
-    assert routes[1]['eta_hours'] == 76.0
+    assert routes[0]['eta_hours'] >= 74
+    assert routes[1]['eta_hours'] == round(70+context['conditions']['rail_delay']+result.json()['delay_hours'],2)
 
 
 def test_scenarios_work_without_ai_keys(client, monkeypatch):
@@ -160,8 +157,8 @@ def test_scenarios_work_without_ai_keys(client, monkeypatch):
         monkeypatch.delenv(key, raising=False)
     result = client.post('/api/predict', json={'shipment_id':'SCT-001'})
     assert result.status_code == 200
-    assert result.json()['method'] == 'demo_random'
-    assert result.json()['scenario_id'] == 'wind'
+    assert result.json()['method'] == 'historical_knn'
+    assert result.json()['metrics']['test_count'] == 40
 
 
 @pytest.mark.parametrize('field,value', [('weather_severity',2),('port_load',50),('wind_speed',8),('wave_height',1),('rail_delay',2),('route_id','unknown')])

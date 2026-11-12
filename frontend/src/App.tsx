@@ -9,7 +9,7 @@ import './App.css'
 const labels: Record<string, string> = {pending:'Ожидает', in_transit:'В пути', completed:'Завершён', not_submitted:'Не отправлены', submitted:'Отправлены', approved:'Приняты', rejected:'Отклонены', low:'Низкий', medium:'Средний', high:'Высокий', prediction_updated:'Обновлён прогноз'}
 const pages = [
   { id: 'monitor', title: 'Мониторинг', hint: 'Этапы, ETA и маршруты', icon: '▦' },
-  { id: 'scenario', title: 'Сценарии задержек', hint: 'Случайная задержка и причина', icon: '↗' },
+  { id: 'scenario', title: 'Прогноз', hint: 'История, условия и стыковки', icon: '↗' },
   { id: 'sources', title: 'Источники', hint: 'Сводки и происхождение данных', icon: '◈' },
   { id: 'documents', title: 'Документы', hint: 'Проверка комплектности', icon: '▤' },
   { id: 'events', title: 'Журнал', hint: 'События выбранного груза', icon: '◷' },
@@ -29,13 +29,14 @@ function RouteComparison({routes, baseline, selected, onSelect}: {routes: Route[
         <div><dt>ETA / длительность</dt><dd>{hours(route.eta_hours)}</dd></div>
         {before && <div><dt>До расчёта</dt><dd>{hours(before.eta_hours)}</dd></div>}
         {delta !== null && <div><dt>Изменение ETA</dt><dd>{delta > 0 ? '+' : ''}{hours(delta)}</dd></div>}
-        <div><dt>Выбросы CO₂e</dt><dd>{route.co2_kg.toLocaleString('ru-RU')} кг</dd></div>
-      </dl><p>{route.reason}</p><button type="button" aria-pressed={selected === route.route_id} onClick={() => onSelect(route.route_id)}>{selected === route.route_id ? 'Выбран на карте' : 'Показать на карте'}</button>
+        <div><dt>Прибытие</dt><dd>{new Date(route.eta_at).toLocaleString('ru-RU')}</dd></div><div><dt>Выбросы CO₂e</dt><dd>{route.co2_kg.toLocaleString('ru-RU')} кг</dd></div>
+      </dl><p>{route.reason}</p><p>{route.transfer.applicable ? <>Поезд прибывает через {hours(route.transfer.actual_train_arrival_hours)}. {route.transfer.missed_ferry ? 'Плановый паром пропущен.' : 'Плановый паром доступен.'} Отправление парома через {hours(route.transfer.ferry_departure_hours)}, ожидание после подготовки {hours(route.transfer.wait_hours)}. Изменение ETA: +{hours(route.transfer.delay_hours)}.</> : <>Сухопутный маршрут через Баку. ETA включает опоздание поезда и прогноз обработки терминала.</>}</p><details><summary>Участки и расчёт CO₂e</summary><table><thead><tr><th>Участок</th><th>км</th><th>кг CO₂e</th></tr></thead><tbody>{route.legs.map((leg, i) => <tr key={i}><td>{leg.stops.join(' → ')} ({({rail:'ж/д',ferry:'паром',road:'авто'})[leg.mode]})</td><td>{leg.distance_km}</td><td>{leg.co2_kg}</td></tr>)}</tbody></table><p className="footnote">CO₂e = расстояние × масса груза × коэффициент транспорта. Коэффициенты модели: ж/д 0,022, паром 0,016, авто 0,08 кг/т·км. Геометрия схематичная.</p></details><button type="button" aria-pressed={selected === route.route_id} onClick={() => onSelect(route.route_id)}>{selected === route.route_id ? 'Выбран на карте' : 'Показать на карте'}</button>
     </article>
   })}</div>
 }
 
 function App() {
+  const [adding, setAdding] = useState(false)
   const [shipments, setShipments] = useState<Shipment[]>([])
   const [selected, setSelected] = useState('')
   const [detail, setDetail] = useState<Detail | null>(null)
@@ -125,6 +126,14 @@ function App() {
       try {await refreshDetail()} catch (error) {setError(`Прогноз сохранён, но ETA и журнал не обновлены. ${message(error)}`)}
     } catch (error) {setError(message(error))} finally {setBusy(false)}
   }
+  async function addShipment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError('')
+    const form = new FormData(event.currentTarget)
+    try {
+      const created = await api<Shipment>('/api/shipments', {name: String(form.get('name')).trim(), weight_tonnes: Number(form.get('weight')), departure_at: new Date(String(form.get('departure'))).toISOString(), conditions: {weather_severity:Number(form.get('weather')), port_load:Number(form.get('load')), rail_delay:Number(form.get('rail')), wind_speed:Number(form.get('wind')), wave_height:Number(form.get('wave'))}})
+      setShipments(await api<Shipment[]>('/api/shipments')); setSelected(created.id); setDetail(null); setRoutes([]); setForecast(null); setContext(null); setCheck(null); setDocuments([]); setEvents([]); setDetailLoading(true); setAdding(false)
+    } catch(error) {setError(message(error))} finally {setBusy(false)}
+  }
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(''); setCheck(null)
     try {
@@ -147,14 +156,15 @@ function App() {
       <div className="nav-caption">УПРАВЛЕНИЕ КОРИДОРОМ</div>
       <nav aria-label="Основная навигация">{pages.map((item, index) => <button key={item.id} className={page === item.id ? 'nav active' : 'nav'} aria-current={page === item.id ? 'page' : undefined} onClick={() => setPage(item.id)}><span aria-hidden="true">{item.icon}</span><span className="nav-label">{item.title}<small>{item.hint}</small></span><span className="nav-number">0{index + 1}</span></button>)}</nav>
       <div className="sidebar-context"><span className="nav-caption">В РАБОТЕ</span><strong>{selected || 'Груз не выбран'}</strong><p>{detail ? `${detail.origin} → ${detail.destination}` : 'Выберите перевозку в списке'}</p><small>Разделы открываются для этого груза</small></div>
-      <div className="sidebar-provider"><small>ДЕМО-СЦЕНАРИИ</small><strong>7 вариантов задержки</strong><span>Случайный выбор · без API-ключей</span></div>
+
       <div className="sidebar-bottom"><span className="demo-dot"/> Демонстрационная среда<small>Каспийский транспортный коридор</small></div>
     </aside>
     <main>
       <header><div><span className="eyebrow">ЦЕНТР УПРАВЛЕНИЯ ПЕРЕВОЗКАМИ</span><h1>{currentPage.title}</h1><p className="page-subtitle">{currentPage.hint}</p></div><div className="header-actions"><span className={online ? 'connection online' : 'connection'}>{online ? '● API подключён' : '○ Нет соединения'}</span><button onClick={reload} disabled={busy || loading}>Обновить ↻</button></div></header>
-      <div className="demo-banner">ДЕМО <span>Синтетические грузы, история и сводки · случайные сценарии задержек · состояние сбрасывается при перезапуске.</span></div>
+      <p className="footnote">История и исходные сводки синтетические. Расчёты маршрутов и выбросов оценочные.</p>
       {error && <div role="alert" className="error"><span>{error}</span><button onClick={reload} disabled={busy || loading}>Повторить</button></div>}
       <section className="metrics" aria-label="Сводка перевозок"><article><span>Всего перевозок</span><strong>{shipments.length}</strong><small>В текущей демонстрации</small></article><article><span>Грузы в пути</span><strong>{shipments.filter(item => item.status === 'in_transit').length}</strong><small>Активные перевозки</small></article><article><span>Ожидают отправки</span><strong>{shipments.filter(item => item.status === 'pending').length}</strong><small>Подготовка к перевозке</small></article><article><span>Завершены</span><strong>{shipments.filter(item => item.status === 'completed').length}</strong><small>Доставка выполнена</small></article></section>
+      <section className="panel add-shipment"><button type="button" onClick={() => setAdding(!adding)} disabled={busy}>+ Добавить отправку</button>{adding && <form onSubmit={addShipment}><fieldset disabled={busy}><legend>Новая отправка · Астрахань — Бендер-Аббас</legend><div className="shipment-fields"><label>Груз<input name="name" required maxLength={120}/></label><label>Масса, т<input name="weight" type="number" min="0.01" max="10000" step="0.01" defaultValue="20" required/></label><label>Отправление<input name="departure" type="datetime-local" required/></label>{[{name:'weather',label:'Погода, 0–5',max:5,value:3},{name:'load',label:'Загрузка порта, %',max:100,value:70},{name:'rail',label:'Опоздание поезда, ч',max:720,value:4},{name:'wind',label:'Ветер, м/с',max:100,value:10},{name:'wave',label:'Волны, м',max:30,value:1}].map(field => <label key={field.name}>{field.label}<input name={field.name} type="number" min="0" max={field.max} step="0.1" defaultValue={field.value} required/></label>)}</div><button className="primary">{busy ? 'Сохраняем…' : 'Сохранить отправку'}</button></fieldset></form>}</section>
       <div className="workspace">
         <section className="panel shipments"><div className="panel-heading"><h2>Перевозки</h2><span>{visible.length} из {shipments.length}</span></div><label className="sr-only" htmlFor="search">Поиск груза</label><input id="search" placeholder="Номер, груз или направление…" value={search} onChange={event => setSearch(event.target.value)}/><label className="sr-only" htmlFor="status">Статус перевозки</label><select id="status" value={filter} onChange={event => setFilter(event.target.value)}><option value="all">Все статусы</option>{['pending', 'in_transit', 'completed'].map(status => <option key={status} value={status}>{labels[status]}</option>)}</select><div className="shipment-list">{loading && <p className="empty">Загрузка перевозок…</p>}{!loading && !visible.length && <p className="empty">Грузы не найдены.</p>}{visible.map(item => <button disabled={busy || loading} key={item.id} aria-pressed={selected === item.id} className={`shipment ${selected === item.id ? 'selected' : ''}`} onClick={() => chooseShipment(item.id)}><div><span className="mono">{item.id}</span><span className={`badge ${item.status}`}>{labels[item.status]}</span></div><h3>{item.name}</h3><p>{item.origin} <span>→</span> {item.destination}</p></button>)}</div></section>
         <section className="panel detail" aria-label={`${currentPage.title}: ${selected || 'груз не выбран'}`}>
@@ -164,10 +174,10 @@ function App() {
               {(page === 'monitor' || page === 'scenario') && routes.length > 0 && <RouteMap routes={routes} selected={routeId} onSelect={setRouteId}/> }
               {page === 'monitor' && <>
                 <div className="section-title"><h3>Этапы перевозки</h3><span>По данным груза</span></div><ol className="stages">{detail.stages.map((stage, index) => <li key={index} className={stage.status}><span>{stage.status === 'completed' ? '✓' : index + 1}</span><div><strong>{stage.name}</strong><small>{stage.status === 'current' ? 'Текущий этап' : stage.status === 'completed' ? 'Выполнено' : 'Ожидается'}</small></div></li>)}</ol>
-                <div className="summary-grid"><article><span>Средняя историческая задержка</span><strong>{hours(detail.historical_avg_delay_hours)}</strong></article><article><span>Последний прогноз задержки</span><strong>{detail.last_delay_hours == null ? 'Не рассчитан' : hours(detail.last_delay_hours)}</strong></article><article><span>Комплектность документов</span><strong>{labels[detail.preclearance_status]}</strong></article></div>
+                <p className="muted">Масса: {detail.weight_tonnes.toLocaleString('ru-RU')} т · Отправление: {new Date(detail.departure_at).toLocaleString('ru-RU')}</p><div className="summary-grid"><article><span>Средняя историческая задержка</span><strong>{hours(detail.historical_avg_delay_hours)}</strong></article><article><span>Последний прогноз задержки</span><strong>{detail.last_delay_hours == null ? 'Не рассчитан' : hours(detail.last_delay_hours)}</strong></article><article><span>Комплектность документов</span><strong>{labels[detail.preclearance_status]}</strong></article></div>
                 <div className="section-title"><h3>Маршруты и ETA</h3><span>{detail.last_delay_hours == null ? 'До расчёта задержки' : 'С учётом последнего прогноза'}</span></div>
                 {routes.length ? <RouteComparison routes={routes} selected={routeId} onSelect={setRouteId}/> : <p className="empty">{busy ? 'Обновляем ETA…' : 'Маршруты недоступны. Обновите данные.'}</p>}
-                <p className="footnote">ETA показан как длительность в часах. Маршруты и CO₂e — модельные оценки; до выбора сценария маршрут показывает базовый ETA. Линии на карте схематичные, без GPS и дорожного роутинга.</p>
+                <p className="footnote">ETA показан как длительность в часах. Маршруты и CO₂e — модельные оценки; до прогноза маршрут показывает базовый ETA. Линии на карте схематичные, без GPS и дорожного роутинга.</p>
               </>}
               {page === 'sources' && <>
                 <div className="section-title"><h3>Демонстрационные сводки</h3><span className="badge">Синтетические данные</span></div>
@@ -176,21 +186,22 @@ function App() {
                 {context ? <><p className="mono">{context.snapshot_id} · {new Date(context.observed_at).toLocaleString('ru-RU')}</p>
                   <div className="source-grid">{context.sources.map(source => <article key={source.kind}><h3>{source.name}</h3><p>{source.note}</p></article>)}</div>
                   <dl className="source-values">{Object.entries(context.conditions).map(([field, value]) => <div key={field}><dt>{({weather_severity:'Погода (0–5)', port_load:'Загрузка порта (%)', wind_speed:'Ветер (м/с)', wave_height:'Волны (м)', rail_delay:'Поезд (ч)'})[field] || field}</dt><dd>{value}</dd></div>)}</dl>
-                  <p className="footnote">История: 200 синтетических наблюдений по погодной оценке, загрузке порта и фактической задержке. История не содержит измерений ветра, волн или разбивки по маршрутам. Эти сводки справочные и не влияют на случайные задержки.</p>
+                  <p className="footnote">История: 200 синтетических наблюдений по погодной оценке, загрузке порта и фактической задержке. История не содержит измерений ветра, волн или разбивки по маршрутам. Погода и загрузка порта входят в прогноз. Задержка поезда влияет на стыковку. Ветер и волны показаны справочно.</p>
                 </> : !contextError && <p>Загрузка сводок…</p>}
               </>}
               {page === 'scenario' && <>
-                <div className="section-title"><h3>Случайный сценарий задержки</h3><span className="badge">Демо</span></div>
-                <p className="muted">Выберите маршрут и получите один из 7 вариантов: 0, 1,5, 3, 4,5, 6, 8 или 12 часов с соответствующей причиной. Каждый запрос выбирает сценарий случайно; варианты могут повторяться. Сводки погоды и история на выбор не влияют.</p>
+                <div className="section-title"><h3>Прогноз портовой задержки</h3></div>
+                <p className="muted">Прогноз использует 8 похожих записей из обучающей части истории по погоде и загрузке порта. При одинаковых входных данных результат одинаковый.</p>
                 <form onSubmit={predict}>
                   <fieldset disabled={busy}><legend className="sr-only">Маршрут прогноза</legend>
                     <label>Маршрут для прогноза<select required disabled={!routes.length} value={routeId} onChange={event => setRouteId(event.target.value)}>{routes.map(route => <option key={route.route_id} value={route.route_id}>{route.name}</option>)}</select></label>
-                    <button className="primary" disabled={busy || !online || !routes.length}>{busy ? 'Выбираем сценарий…' : 'Сгенерировать задержку'}</button>
+                    <button className="primary" disabled={busy || !online || !routes.length}>{busy ? 'Рассчитываем…' : 'Рассчитать прогноз'}</button>
                   </fieldset>
                 </form>
                 {forecast && result && <>
-                  <div className={`result ${result.risk}`} role="status"><span>Прогноз дополнительной задержки</span><strong>{hours(result.delay_hours)}</strong><p>Риск: {labels[result.risk]}</p><ul>{result.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul><div className="model-info"><span>Сценарий: {result.scenario_id}</span><span>Маршрут: {result.route_id === 'main' ? 'Основной' : 'Альтернативный'}</span></div></div>
-                  <p className="footnote">Прогноз для маршрута {forecast.request.route_id}. Задержка и причина выбраны случайно.</p>
+                  <div className={`result ${result.risk}`} role="status"><span>Прогноз задержки обработки в порту</span><strong>{hours(result.delay_hours)}</strong><p>Риск: {labels[result.risk]}</p><ul>{result.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul><div className="model-info"><span>Метод: похожие наблюдения</span><span>Маршрут: {result.route_id === 'main' ? 'Основной' : 'Альтернативный'}</span></div></div>
+                  <dl className="source-values"><div><dt>MAE прогноза на {result.metrics.test_count} отложенных записях</dt><dd>{result.metrics.model_mae_hours.toLocaleString('ru-RU', {maximumFractionDigits:3})} ч</dd></div><div><dt>MAE простого среднего</dt><dd>{result.metrics.baseline_mae_hours.toLocaleString('ru-RU', {maximumFractionDigits:3})} ч</dd></div><div><dt>Простой средний прогноз</dt><dd>{hours(result.metrics.baseline_delay_hours)}</dd></div></dl><p className="footnote">Обучение: первые {result.metrics.train_count} строк. Проверка: последние {result.metrics.test_count}. Ошибка относится к портовой задержке на синтетической истории.</p>
+                  <p className="footnote">Прогноз для маршрута {forecast.request.route_id}. Портовая задержка рассчитана по истории. Задержка поезда и ожидание парома учитываются отдельно в ETA.</p>
                   {changed && <p className="notice">Выбран другой маршрут. Ниже остаётся предыдущий результат — запустите прогноз заново.</p>}
                   <div className="section-title forecast-routes"><h3>ETA после расчёта</h3><span>Сравнение с состоянием до запроса</span></div>
                   {routes.length ? <RouteComparison routes={routes} baseline={forecast.baseline} selected={routeId} onSelect={setRouteId}/> : <p className="empty">{busy ? 'Обновляем ETA…' : 'Не удалось обновить ETA. Повторите загрузку данных.'}</p>}

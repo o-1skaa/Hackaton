@@ -1,90 +1,29 @@
-# API-контракт Smart Caspian Transit
+# API Smart Caspian Transit
 
-Базовый адрес: `http://127.0.0.1:8000`. Все тела запросов и ответов — JSON.
-Массивы возвращаются без обёрток `data` или `routes`.
-Авторитетные модели — `backend/app/schemas.py`; полный OpenAPI доступен по `/openapi.json`.
-
-| Метод | Путь | Ответ 200 |
-| --- | --- | --- |
-| GET | `/health` | `{status: "ok", mode: "synthetic-demo"}` |
-| GET | `/api/shipments` | `ShipmentSummary[]` |
-| GET | `/api/shipments/{shipment_id}` | `ShipmentDetail` |
-| GET | `/api/prediction-context/{shipment_id}` | `PredictionContext` |
-| POST | `/api/predict` | `PredictResponse` |
-| POST | `/api/preclearance` | `PreclearanceResponse` |
-| GET | `/api/preclearance/{check_id}` | `PreclearanceCheck` |
-| GET | `/api/shipments/{shipment_id}/events` | `Event[]` |
-| GET | `/api/routes/{shipment_id}` | `Route[]` |
-
-## Грузы
-
-`ShipmentSummary`: `id`, `name`, `origin`, `destination` — строки; `status` — `pending | in_transit | completed`; `synthetic` — `true`.
-
-`ShipmentDetail` дополнительно содержит:
-
-- `historical_avg_delay_hours`: число;
-- `stages`: массив `{name: string, status: "pending" | "current" | "completed"}`;
-- `preclearance_status`: `not_submitted | submitted | approved | rejected`;
-- `last_delay_hours`: число или `null` до первого прогноза.
-
-## Случайный сценарий
-
-`POST /api/predict`: `{"shipment_id":"SCT-001","route_id":"main"}`.
-`route_id`: main / alternative, по умолчанию main. Неизвестный груз — 404,
-лишние поля и неверный маршрут — 422.
-
-Пример ответа:
+GET `/health` — состояние API.
+GET `/api/shipments` — список отправок.
+GET `/api/shipments/{id}` — карточка, этапы, последняя портовая задержка и комплектность документов.
+POST `/api/shipments` — создать отправку (201):
 
 ```json
-{"delay_hours":6,"risk":"high","reasons":["Сильный ветер: временно приостановлены портовые операции."],"scenario_id":"wind","method":"demo_random","route_id":"main","synthetic":true}
+{"name":"Оборудование","weight_tonnes":20,"departure_at":"2026-11-12T08:00:00Z","conditions":{"weather_severity":3,"port_load":70,"rail_delay":4,"wind_speed":10,"wave_height":1}}
 ```
 
-Случайный выбор одного из 7 сценариев; повторения допустимы.
-`risk`: low <2 ч, medium <4 ч, high >=4 ч. Ключи и внешние API не используются.
-Задержка записывается для выбранного маршрута, в карточку и журнал.
+Направление фиксировано, начальный статус pending. Имя непустое, масса >0 и ≤10000 т. Дата ISO 8601 с часовым поясом. Погода 0–5, порт 0–100%, поезд 0–720 ч, ветер 0–100 м/с, волны 0–30 м. Числа конечные. Невалидный запрос — 422.
 
-`GET /api/prediction-context/{shipment_id}` сохраняет справочные синтетические
-сводки; `provider`: `{"provider":"local","configured":true,"method":"demo_random"}`.
-Сводки не участвуют в генерации задержки.
+GET `/api/prediction-context/{id}` — условия и происхождение данных. Новые отправки используют введённые условия, встроенные — сводку из файлов.
+POST `/api/predict` принимает `{"shipment_id":"SCT-001","route_id":"main"}`. Route: main или alternative. Ответ: delay_hours, risk (low/medium/high), reasons, method=historical_knn, route_id, synthetic=true, metrics. delay_hours — задержка обработки порта/терминала, без поезда и ожидания рейса. Повторный запрос с теми же условиями даёт тот же ответ. Обновляет только прогноз выбранного маршрута.
 
-## Маршруты и карта
+GET `/api/model-metrics` — train_count=160, test_count=40, MAE прогноза, MAE среднего, средний прогноз и описание границ проверки. Единицы ошибки — часы.
+GET `/api/routes/{id}` — два маршрута. Каждый содержит route_id, name, distance_km, eta_hours (длительность), eta_at (ISO дата), co2_kg, recommended, reason, waypoints ([широта, долгота]), legs и transfer.
 
-`GET /api/routes/{shipment_id}` возвращает Route[]: `route_id`, `name`,
-`distance_km`, `eta_hours`, `co2_kg`, `recommended`, `reason`,
-`waypoints` — массив пар [широта, долгота].
-ETA = базовые 72 ч (main) или 70 ч (alternative) + последняя задержка маршрута.
-Основной путь через Махачкалу; альтернативный через Баку. Общие конечные точки:
-Астрахань и Бендер-Аббас. Геометрия схематичная, все показатели демонстрационные.
-Карта Leaflet не делает запросов роутинга; только подложка загружается из OpenStreetMap.
+Leg: mode (rail/ferry/road), stops (русские названия), waypoints, distance_km, duration_hours, factor_kg_per_tkm, co2_kg. Итоговые расстояние и выбросы — суммы по legs.
+Transfer: applicable (есть ли паром), planned_train_arrival_hours, actual_train_arrival_hours, ready_hours, planned_ferry_departure_hours, ferry_departure_hours, missed_ferry, wait_hours, delay_hours, interval_hours. Время отсчитывается от отправления груза. Для alternative поля парома не применяются, проверяйте applicable.
 
-## Проверка документов
+До прогноза задержка обработки равна нулю. Опоздание поезда уже известно из условий. Для сравнения прогнозов рассчитайте оба маршрута. Базовые встроенные отправки имеют опорное отправление 12 ноября 2026, 00:00 UTC и массу 20 т. Добавленные — введённые дату и массу.
 
-POST требует заголовок `X-API-Key` со значением `DEMO_API_KEY` (локальный пример: `demo-local-key`).
+POST `/api/preclearance` с заголовком `X-API-Key` и телом `{"shipment_id":"SCT-001","documents":[{"type":"invoice","filename":"invoice.pdf"},{"type":"packing_list","filename":"packing.pdf"}]}` проверяет комплектность. GET `/api/preclearance/{check_id}` возвращает проверку.
+GET `/api/shipments/{id}/events` — события прогнозов и документов.
 
-```json
-{
-  "shipment_id": "SCT-001",
-  "documents": [
-    {"type":"invoice","filename":"invoice.txt"},
-    {"type":"packing_list","filename":"packing.txt"}
-  ]
-}
-```
-
-`documents` — непустой массив. В документе `type` и `filename` — непустые строки; `content` — необязательная строка или null. Содержимое не сохраняется и не анализируется.
-
-Ответ: `{status: "approved" | "rejected", check_id: string, reasons: string[]}`.
-Оба обязательных типа дают approved, отсутствие одного из них — rejected. Сначала записывается событие submitted, затем итоговое событие. Проверка выполняется сразу; ожидать фоновую обработку не требуется.
-
-GET проверки возвращает тот же результат плюс `shipment_id` и `documents: {type: string, filename: string}[]`. Возвращаемые типы документов сохраняют исходное написание.
-
-## Журнал
-
-`Event`: `{timestamp: string, event: "prediction_updated" | "submitted" | "approved" | "rejected", details: string}`.
-Время — ISO 8601 UTC. Журнал сначала пуст.
-
-## Ошибки
-
-401 — неверный ключ проверки документов; 404 — груз или проверка не найдены;
-422 — неверный запрос. Тело ошибки содержит `error`, для 422 также `details`.
-Состояние демонстрационное и сбрасывается после перезапуска.
+Ошибка — JSON с полем error; отсутствующий ресурс 404, неверный ключ 401, неверный ввод 422.
+Отправки сохраняются в SQLite. Журнал, прогнозы и документы — в памяти до перезапуска.

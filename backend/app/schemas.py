@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class PredictRequest(BaseModel):
@@ -12,8 +12,8 @@ class PredictResponse(BaseModel):
     delay_hours: float
     risk: Literal["low", "medium", "high"]
     reasons: list[str]
-    method: Literal["demo_random"]
-    scenario_id: str
+    method: Literal["historical_knn"]
+    metrics: dict
     route_id: Literal["main", "alternative"]
     synthetic: Literal[True]
 
@@ -68,6 +68,8 @@ class Stage(BaseModel):
 
 
 class ShipmentDetail(ShipmentSummary):
+    weight_tonnes: float = 20
+    departure_at: str = "2026-11-12T00:00:00+00:00"
     historical_avg_delay_hours: float
     stages: list[Stage]
     preclearance_status: Literal["not_submitted", "submitted", "approved", "rejected"]
@@ -89,6 +91,9 @@ class Route(BaseModel):
     recommended: bool
     reason: str
     waypoints: list[tuple[float, float]]
+    legs: list[dict]
+    transfer: dict
+    eta_at: str
 
 
 class CheckedDocument(BaseModel):
@@ -99,3 +104,25 @@ class CheckedDocument(BaseModel):
 class PreclearanceCheck(PreclearanceResponse):
     shipment_id: str
     documents: list[CheckedDocument]
+
+
+class ShipmentCreate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=1, max_length=120, pattern=r'.*\S.*')
+    weight_tonnes: float = Field(gt=0, le=10000, allow_inf_nan=False)
+    departure_at: str
+    conditions: dict
+
+    @field_validator('departure_at')
+    @classmethod
+    def valid_date(cls, value):
+        from datetime import datetime
+        if datetime.fromisoformat(value.replace('Z','+00:00')).tzinfo is None:
+            raise ValueError('Укажите часовой пояс')
+        return value
+
+    @field_validator('conditions')
+    @classmethod
+    def valid_conditions(cls, value):
+        from app.services.data_sources import Conditions
+        return Conditions.model_validate(value).model_dump()

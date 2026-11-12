@@ -1,5 +1,5 @@
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -15,9 +15,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.data import SHIPMENTS
 from app.schemas import (
     PredictRequest, PredictResponse, PreclearanceRequest, PreclearanceResponse,
-    HealthResponse, ShipmentSummary, ShipmentDetail, Event, Route, PreclearanceCheck, PredictionContext,
+    HealthResponse, ShipmentSummary, ShipmentDetail, Event, Route, PreclearanceCheck, PredictionContext, ShipmentCreate,
 )
-from app.services.prediction import predict as make_prediction, provider_status
+from app.services.prediction import predict as make_prediction, provider_status, metrics
 from app.services.routing import calculate_routes
 from app.services.data_sources import refresh_snapshots
 
@@ -26,7 +26,12 @@ DEMO_API_KEY = os.getenv("DEMO_API_KEY", "demo-local-key")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.source_snapshots = refresh_snapshots(SHIPMENTS)
+    load_saved_shipments()
+    app.state.source_snapshots = refresh_snapshots([key for key in SHIPMENTS if not SHIPMENTS[key].get('conditions')])
+    for key, item in SHIPMENTS.items():
+        if item.get('conditions'):
+            app.state.source_snapshots[key] = source_for(item)
+        EVENTS.setdefault(key, [])
     yield
 
 
@@ -63,6 +68,49 @@ EVENTS: dict[str, list[dict]] = {shipment_id: [] for shipment_id in SHIPMENTS}
 LATEST_PREDICTIONS: dict[str, float] = {}
 ROUTE_PREDICTIONS: dict[str, dict[str, float]] = {}
 PRECLEARANCE_CHECKS: dict[str, dict] = {}
+
+
+import json
+import sqlite3
+DB_PATH = Path(__file__).resolve().parents[1] / 'data' / '.runtime' / 'shipments.sqlite3'
+
+@contextmanager
+def database():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(DB_PATH)
+    try:
+        with db:
+            db.execute('CREATE TABLE IF NOT EXISTS shipments (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
+            yield db
+    finally:
+        db.close()
+
+def load_saved_shipments():
+    with database() as db:
+        for key, payload in db.execute('SELECT id, payload FROM shipments'):
+            SHIPMENTS[key] = json.loads(payload)
+
+def source_for(item):
+    return {'snapshot_id': item['id'], 'observation_id': 'manual', 'synthetic': True,
+            'observed_at': datetime.now(timezone.utc).isoformat(), 'conditions': item['conditions'],
+            'sources': [{'name': 'Ввод оператора', 'kind': 'manual', 'note': 'Параметры отправки'}]}
+
+@app.get('/api/model-metrics')
+def model_metrics():
+    return metrics()
+
+@app.post('/api/shipments', response_model=ShipmentSummary, status_code=201)
+def create_shipment(payload: ShipmentCreate):
+    key = 'SCT-' + uuid4().hex[:10].upper()
+    item = {**payload.model_dump(), 'id': key, 'origin': 'Астрахань', 'destination': 'Бендер-Аббас',
+            'status': 'pending', 'synthetic': True, 'historical_avg_delay_hours': metrics()['baseline_delay_hours'],
+            'stages': [{'name': name, 'status': 'pending'} for name in ['Астрахань', 'Махачкала / Баку', 'Энзели', 'Бендер-Аббас']]}
+    with database() as db:
+        db.execute('INSERT INTO shipments VALUES (?, ?)', (key,json.dumps(item, ensure_ascii=False)))
+    SHIPMENTS[key] = item
+    EVENTS[key] = []
+    app.state.source_snapshots[key] = source_for(item)
+    return item
 
 
 def get_shipment_or_404(shipment_id: str) -> dict:
@@ -107,6 +155,7 @@ def get_shipment(shipment_id: str) -> dict:
     last_check = related_checks[-1] if related_checks else None
     return {
         **shipment,
+        "historical_avg_delay_hours": metrics()["baseline_delay_hours"],
         "synthetic": True,
         "preclearance_status": last_check["status"] if last_check else "not_submitted",
         "last_delay_hours": LATEST_PREDICTIONS.get(shipment_id),
@@ -126,7 +175,7 @@ def predict(payload: PredictRequest) -> dict:
                              route_id=payload.route_id)
     ROUTE_PREDICTIONS.setdefault(payload.shipment_id, {})[payload.route_id] = result["delay_hours"]
     LATEST_PREDICTIONS[payload.shipment_id] = result["delay_hours"]
-    add_event(payload.shipment_id, "prediction_updated", f"Демо-сценарий {result['scenario_id']} / {payload.route_id}: {result['delay_hours']} ч; {result['reasons'][0]}")
+    add_event(payload.shipment_id, "prediction_updated", f"Прогноз / {payload.route_id}: {result['delay_hours']} ч; {result['reasons'][0]}")
     return result
 
 
@@ -174,7 +223,7 @@ def shipment_events(shipment_id: str) -> list[dict]:
 @app.get("/api/routes/{shipment_id}", response_model=list[Route])
 def routes(shipment_id: str) -> list[dict]:
     shipment = get_shipment_or_404(shipment_id)
-    return calculate_routes(shipment, ROUTE_PREDICTIONS.get(shipment_id, {}))
+    return calculate_routes({**shipment, "conditions": app.state.source_snapshots[shipment_id]["conditions"]}, ROUTE_PREDICTIONS.get(shipment_id, {}))
 
 
 # Register after API routes; missing API endpoints must remain JSON 404s.

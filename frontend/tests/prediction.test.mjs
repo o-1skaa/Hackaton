@@ -8,7 +8,7 @@ test('forecast request sends only shipment and route; conditions come from serve
   assert.throws(() => buildPredictionRequest('SCT-001', 'unknown'))
 })
 test('prediction rejects corrupt delay/risk/reasons and preserves scenario metadata', () => {
-  const result = {delay_hours:0,risk:'low',reasons:[],method:'demo_random',scenario_id:'on-time',route_id:'main',synthetic:true}
+  const result = {delay_hours:0,risk:'low',reasons:[],method:'historical_knn',metrics:{model_mae_hours:1,baseline_mae_hours:2},route_id:'main',synthetic:true}
   assert.deepEqual(validatePrediction(result), result)
   for (const bad of [{...result,delay_hours:-1},{...result,delay_hours:NaN},{...result,risk:'unknown'},{...result,reasons:[42]}]) assert.throws(() => validatePrediction(bad))
 })
