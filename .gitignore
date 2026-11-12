@@ -225,3 +225,6 @@ __marimo__/
 
 node_modules/
 *.tsbuildinfo
+
+# Per-run demonstration data selected at server startup
+backend/data/.runtime/

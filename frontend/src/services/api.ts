@@ -18,4 +18,4 @@ export async function api<T>(path: string, body?: unknown, key?: string, signal?
 }
 export const getShipments = () => api<Shipment[]>('/api/shipments')
 
-export interface PredictionContext { snapshot_id: string; synthetic: true; observed_at: string; conditions: {weather_severity: number; wind_speed: number; wave_height: number; port_load: number; rail_delay: number}; sources: {name: string; kind: string; note: string}[]; provider: {provider: string; configured: boolean; model: string; method: string; prompt_version: string} }
+export interface PredictionContext { snapshot_id: string; observation_id: string; synthetic: true; observed_at: string; conditions: {weather_severity: number; wind_speed: number; wave_height: number; port_load: number; rail_delay: number}; sources: {name: string; kind: string; note: string}[]; provider: {provider: string; configured: boolean; model: string; method: string; prompt_version: string} }

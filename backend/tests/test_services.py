@@ -9,32 +9,35 @@ from app.services.routing import calculate_routes
 
 @pytest.fixture
 def provider(monkeypatch):
-    monkeypatch.setenv('DEEPSEEK_API_KEY', 'test-secret')
-    monkeypatch.setenv('DEEPSEEK_MODEL', 'test-model')
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-secret')
+    monkeypatch.setenv('GEMINI_MODEL', 'test-model')
+
+
+SOURCE = {'snapshot_id':'TEST-SNAPSHOT','synthetic':True,'conditions':{'weather_severity':4,'port_load':90,'wind_speed':17,'wave_height':2.8,'rail_delay':3}}
 
 
 def call():
-    return prediction.predict(4, 90, shipment=SHIPMENTS['SCT-001'], wind_speed=17, wave_height=2.8, rail_delay=3)
+    return prediction.predict(shipment=SHIPMENTS['SCT-001'], source=SOURCE)
 
 
-def reply(data, finish='stop'):
-    return httpx.Response(200, request=httpx.Request('POST', 'https://api.deepseek.com/chat/completions'),
-                          json={'model':'test-model-version', 'choices':[{'finish_reason':finish, 'message':{'content':json.dumps(data)}}]})
+def reply(data, finish='STOP'):
+    return httpx.Response(200, request=httpx.Request('POST', 'https://generativelanguage.googleapis.com/v1beta/models/test-model:generateContent'),
+                          json={'modelVersion':'test-model-version', 'candidates':[{'finishReason':finish, 'content':{'parts':[{'text':json.dumps(data)}]}}]})
 
 
 def test_missing_key_has_no_fallback(monkeypatch):
-    monkeypatch.delenv('DEEPSEEK_API_KEY', raising=False)
-    with pytest.raises(prediction.PredictionUnavailable, match='DEEPSEEK_API_KEY'):
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    with pytest.raises(prediction.PredictionUnavailable, match='GEMINI_API_KEY'):
         call()
 
 
 def test_provider_receives_history_and_conditions(provider, monkeypatch):
     def post(self, url, **kwargs):
-        assert url == 'https://api.deepseek.com/chat/completions'
-        assert kwargs['headers']['Authorization'] == 'Bearer test-secret'
+        assert url == 'https://generativelanguage.googleapis.com/v1beta/models/test-model:generateContent'
+        assert kwargs['headers']['x-goog-api-key'] == 'test-secret'
         body = kwargs['json']
-        assert body['response_format'] == {'type':'json_object'}
-        context = json.loads(body['messages'][1]['content'])
+        assert body['generationConfig']['responseMimeType'] == 'application/json'
+        context = json.loads(body['contents'][0]['parts'][0]['text'])
         assert len(context['historical_observations']) == 200
         assert context['conditions']['wind_speed'] == 17
         assert context['conditions']['rail_delay'] == 3
@@ -63,10 +66,10 @@ def test_invalid_model_output_rejected(provider, monkeypatch, data):
     assert error.value.status_code == 502
 
 
-@pytest.mark.parametrize('content,finish', [(' ', 'stop'), ('{', 'stop'), ('{}', 'length')])
+@pytest.mark.parametrize('content,finish', [(' ', 'STOP'), ('{', 'STOP'), ('{}', 'MAX_TOKENS')])
 def test_blank_malformed_truncated(provider, monkeypatch, content, finish):
     response = reply({})
-    response = httpx.Response(200, request=response.request, json={'choices':[{'finish_reason':finish,'message':{'content':content}}]})
+    response = httpx.Response(200, request=response.request, json={'candidates':[{'finishReason':finish,'content':{'parts':[{'text':content}]}}]})
     monkeypatch.setattr(httpx.Client, 'post', lambda *args, **kwargs: response)
     with pytest.raises(prediction.PredictionUnavailable):
         call()
@@ -74,7 +77,7 @@ def test_blank_malformed_truncated(provider, monkeypatch, content, finish):
 
 @pytest.mark.parametrize('status', [401, 402, 429, 500])
 def test_provider_error_does_not_expose_secret(provider, monkeypatch, status):
-    monkeypatch.setattr(httpx.Client, 'post', lambda *args, **kwargs: httpx.Response(status, request=httpx.Request('POST','https://api.deepseek.com/chat/completions'), text='test-secret'))
+    monkeypatch.setattr(httpx.Client, 'post', lambda *args, **kwargs: httpx.Response(status, request=httpx.Request('POST','https://generativelanguage.googleapis.com/v1beta/models/test-model:generateContent'), text='test-secret'))
     with pytest.raises(prediction.PredictionUnavailable) as error:
         call()
     assert 'test-secret' not in str(error.value)
@@ -97,3 +100,17 @@ def test_route_delay_applies_only_to_selected_route():
     routes = calculate_routes({}, {'main':8, 'alternative':20})
     assert routes[0]['recommended']
     assert routes[1]['eta_hours'] == 90
+
+
+@pytest.mark.parametrize('envelope', [
+    {'promptFeedback':{'blockReason':'SAFETY'}},
+    {'candidates':[]},
+    {'candidates':[{'finishReason':'SAFETY'}]},
+    {'candidates':[{'finishReason':'STOP','content':{'parts':[{'thought':True,'text':'internal reasoning'}]}}]},
+])
+def test_gemini_blocked_or_empty_response(provider, monkeypatch, envelope):
+    monkeypatch.setattr(httpx.Client, 'post', lambda *args, **kwargs: httpx.Response(200,
+                        request=httpx.Request('POST','https://generativelanguage.googleapis.com'), json=envelope))
+    with pytest.raises(prediction.PredictionUnavailable) as error:
+        call()
+    assert error.value.status_code == 502

@@ -1,15 +1,11 @@
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PredictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     shipment_id: str
-    weather_severity: float = Field(ge=0, le=5, allow_inf_nan=False, description="0 — хорошая погода, 5 — экстремальная")
-    wind_speed: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
-    wave_height: float | None = Field(default=None, ge=0, le=30, allow_inf_nan=False)
-    rail_delay: float | None = Field(default=None, ge=0, le=720, allow_inf_nan=False)
     route_id: Literal["main", "alternative"] = "main"
-    port_load: float = Field(ge=0, le=100, allow_inf_nan=False, description="Загрузка порта, в процентах")
 
 
 class PredictResponse(BaseModel):
@@ -28,6 +24,7 @@ class PredictResponse(BaseModel):
 
 class SourceContext(BaseModel):
     snapshot_id: str
+    observation_id: str
     synthetic: Literal[True]
     observed_at: str
     conditions: dict[str, float]

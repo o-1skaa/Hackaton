@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -16,16 +17,24 @@ from app.schemas import (
     PredictRequest, PredictResponse, PreclearanceRequest, PreclearanceResponse,
     HealthResponse, ShipmentSummary, ShipmentDetail, Event, Route, PreclearanceCheck, PredictionContext,
 )
-from app.services.prediction import predict as make_prediction, context_for, provider_status, PredictionUnavailable
+from app.services.prediction import predict as make_prediction, provider_status, PredictionUnavailable
 from app.services.routing import calculate_routes
+from app.services.data_sources import refresh_snapshots
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 DEMO_API_KEY = os.getenv("DEMO_API_KEY", "demo-local-key")
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.source_snapshots = refresh_snapshots(SHIPMENTS)
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Smart Caspian Transit — DEMO API",
     description="Все грузы, документы, маршруты и прогнозы демонстрационные/синтетические.",
-    version="1.1.0",
+    version="1.2.0",
 )
 @app.exception_handler(HTTPException)
 async def handle_http_error(request, exc: HTTPException):
@@ -107,21 +116,20 @@ def get_shipment(shipment_id: str) -> dict:
 @app.get("/api/prediction-context/{shipment_id}", response_model=PredictionContext)
 def prediction_context(shipment_id: str) -> dict:
     get_shipment_or_404(shipment_id)
-    return {**context_for(shipment_id), "provider": provider_status()}
+    return {**app.state.source_snapshots[shipment_id], "provider": provider_status()}
 
 
 @app.post("/api/predict", response_model=PredictResponse)
 def predict(payload: PredictRequest) -> dict:
     shipment = get_shipment_or_404(payload.shipment_id)
     try:
-        result = make_prediction(payload.weather_severity, payload.port_load, shipment=shipment,
-                                 wind_speed=payload.wind_speed, wave_height=payload.wave_height,
-                                 rail_delay=payload.rail_delay, route_id=payload.route_id)
+        result = make_prediction(shipment=shipment, source=app.state.source_snapshots[payload.shipment_id],
+                                 route_id=payload.route_id)
     except PredictionUnavailable as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     ROUTE_PREDICTIONS.setdefault(payload.shipment_id, {})[payload.route_id] = result["delay_hours"]
     LATEST_PREDICTIONS[payload.shipment_id] = result["delay_hours"]
-    add_event(payload.shipment_id, "prediction_updated", f"DeepSeek / {result['model']} / {payload.route_id}: {result['delay_hours']} ч; сводка {result['source_snapshot_id']}")
+    add_event(payload.shipment_id, "prediction_updated", f"Gemini / {result['model']} / {payload.route_id}: {result['delay_hours']} ч; сводка {result['source_snapshot_id']}")
     return result
 
 

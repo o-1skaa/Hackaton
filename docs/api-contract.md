@@ -32,45 +32,46 @@
 Запрос `POST /api/predict`:
 
 ```json
-{"shipment_id":"SCT-001","weather_severity":4,"port_load":90,"wind_speed":17,"wave_height":2.8,"rail_delay":3,"route_id":"main"}
+{"shipment_id":"SCT-001","route_id":"main"}
 ```
 
-| Поле | Диапазон | Обязательное |
-| --- | --- | --- |
-| shipment_id | ID существующего груза | Да |
-| weather_severity | 0–5 | Да |
-| port_load | 0–100 % | Да |
-| wind_speed | 0–100 м/с | Нет; null/пропуск → сводка |
-| wave_height | 0–30 м | Нет; null/пропуск → сводка |
-| rail_delay | 0–720 ч | Нет; null/пропуск → сводка |
-| route_id | main / alternative | Нет; по умолчанию main |
+Обязателен ID груза. `route_id`: main / alternative, по умолчанию main.
+Погода, загрузка порта, ветер, волны и задержка поезда берутся сервером из текущей
+сводки. Любое дополнительное поле в запросе (в том числе прежние погодные параметры)
+даёт 422. Неизвестный груз — 404.
 
-Все числовые входы должны быть конечными. Неизвестный груз — 404.
-
-Пример ответа (число показано для иллюстрации; фактический результат возвращает DeepSeek):
+Пример ответа (число иллюстративное, фактический результат возвращает Gemini):
 
 ```json
 {
   "delay_hours":6.5,"risk":"high","reasons":["Высокая загрузка порта и сильный ветер"],
-  "model":"deepseek-flash","model_version":"deepseek-flash","method":"external_llm",
-  "prompt_version":"caspian-context-v1","route_id":"main","synthetic":true,
-  "source_snapshot_id":"DEMO-20261112-001",
+  "model":"gemini-3.8-flash","model_version":"gemini-3.8-flash","method":"external_llm",
+  "prompt_version":"caspian-gemini-v2","route_id":"main","synthetic":true,
+  "source_snapshot_id":"DEMO-run-id-SCT-001",
   "conditions":{"weather_severity":4,"port_load":90,"wind_speed":17,"wave_height":2.8,"rail_delay":3}
 }
 ```
 
-`model_version` — идентификатор модели из ответа провайдера, при отсутствии — запрошенное
-имя; это не гарантия неизменного набора весов. `prompt_version` версионирует наши инструкции.
-`risk`: low (<2 ч), medium (2–4 ч), high (>=4 ч). При успехе сохраняются задержка выбранного
-маршрута, `last_delay_hours` и событие с именем модели и ID сводки. Последний прогноз
-в карточке может относиться к любому маршруту; журнал указывает к какому.
-При сбое нет записи в журнал или изменения ETA. Повторные запросы могут дать разные ответы.
+`model_version` — идентификатор модели из ответа Gemini `modelVersion`, при отсутствии
+используется запрошенное имя. `prompt_version` — версия инструкций приложения.
+`risk`: low (<2 ч), medium (2–4 ч), high (>=4 ч). При успехе сохраняются задержка
+выбранного маршрута, `last_delay_hours` и событие с моделью и ID сводки.
+При сбое ETA и события не меняются. Повторный AI-запрос может дать другой результат,
+при этом исходные условия в одном запуске сервера одинаковые.
 
-`GET /api/prediction-context/{shipment_id}` возвращает `snapshot_id`, `synthetic: true`,
-`observed_at` (ISO UTC), `conditions` (пять числовых условий), `sources` (массив объектов
-`name`, `kind`, `note`) и `provider` (`provider`, `configured`, `model`, `method`, `prompt_version`).
-`configured` означает только наличие ключа, не успешную проверку баланса/доступности API.
-Это фиксированная демонстрационная сводка; живого парсинга нет. Ключ не передаётся клиенту.
+`GET /api/prediction-context/{shipment_id}` возвращает:
+
+- `snapshot_id`: ID сводки текущего запуска;
+- `observation_id`: ID выбранной записи файла;
+- `synthetic: true`;
+- `observed_at`: время формирования демо-сводки, ISO UTC;
+- `conditions`: weather_severity (0–5), port_load (0–100 %), wind_speed (0–100 м/с), wave_height (0–30 м), rail_delay (0–720 ч);
+- `sources`: массив `{name, kind, note}`;
+- `provider`: `{provider: "gemini", configured: boolean, model, method, prompt_version}`.
+
+`configured` проверяет наличие ключа, а не баланс и доступность API. Ключ не передаётся
+клиенту. Сводка читается из файлов репозитория при запуске, остаётся стабильной до
+следующего запуска и отличается от прошлого сохранённого снимка.
 
 ## Проверка документов
 
