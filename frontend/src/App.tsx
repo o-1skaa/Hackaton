@@ -8,7 +8,7 @@ import './App.css'
 const labels: Record<string, string> = {pending:'Ожидает', in_transit:'В пути', completed:'Завершён', not_submitted:'Не отправлены', submitted:'Отправлены', approved:'Приняты', rejected:'Отклонены', low:'Низкий', medium:'Средний', high:'Высокий', prediction_updated:'Обновлён прогноз'}
 const pages = [
   { id: 'monitor', title: 'Мониторинг', hint: 'Этапы, ETA и маршруты', icon: '▦' },
-  { id: 'scenario', title: 'AI-прогноз', hint: 'Gemini · анализ условий', icon: '↗' },
+  { id: 'scenario', title: 'AI-прогноз', hint: 'GigaChat · анализ условий', icon: '↗' },
   { id: 'sources', title: 'Источники', hint: 'Сводки и происхождение данных', icon: '◈' },
   { id: 'documents', title: 'Документы', hint: 'Проверка комплектности', icon: '▤' },
   { id: 'events', title: 'Журнал', hint: 'События выбранного груза', icon: '◷' },
@@ -146,12 +146,12 @@ function App() {
       <div className="nav-caption">УПРАВЛЕНИЕ КОРИДОРОМ</div>
       <nav aria-label="Основная навигация">{pages.map((item, index) => <button key={item.id} className={page === item.id ? 'nav active' : 'nav'} aria-current={page === item.id ? 'page' : undefined} onClick={() => setPage(item.id)}><span aria-hidden="true">{item.icon}</span><span className="nav-label">{item.title}<small>{item.hint}</small></span><span className="nav-number">0{index + 1}</span></button>)}</nav>
       <div className="sidebar-context"><span className="nav-caption">В РАБОТЕ</span><strong>{selected || 'Груз не выбран'}</strong><p>{detail ? `${detail.origin} → ${detail.destination}` : 'Выберите перевозку в списке'}</p><small>Разделы открываются для этого груза</small></div>
-      <div className="sidebar-provider"><small>AI-ПРОВАЙДЕР</small><strong>{context?.provider.model || 'Gemini'}</strong><span>{context?.provider.configured ? 'Ключ настроен · внешний API' : 'Для прогноза нужен ключ API'}</span></div>
+      <div className="sidebar-provider"><small>AI-ПРОВАЙДЕР</small><strong>{context?.provider.model || 'GigaChat'}</strong><span>{context?.provider.configured ? 'Ключ настроен · внешний API' : 'Для прогноза нужен ключ API'}</span></div>
       <div className="sidebar-bottom"><span className="demo-dot"/> Демонстрационная среда<small>Каспийский транспортный коридор</small></div>
     </aside>
     <main>
       <header><div><span className="eyebrow">ЦЕНТР УПРАВЛЕНИЯ ПЕРЕВОЗКАМИ</span><h1>{currentPage.title}</h1><p className="page-subtitle">{currentPage.hint}</p></div><div className="header-actions"><span className={online ? 'connection online' : 'connection'}>{online ? '● API подключён' : '○ Нет соединения'}</span><button onClick={reload} disabled={busy || loading}>Обновить ↻</button></div></header>
-      <div className="demo-banner">ДЕМО <span>Синтетические грузы, история и сводки · прогноз через Gemini · состояние сбрасывается при перезапуске.</span></div>
+      <div className="demo-banner">ДЕМО <span>Синтетические грузы, история и сводки · прогноз через GigaChat · состояние сбрасывается при перезапуске.</span></div>
       {error && <div role="alert" className="error"><span>{error}</span><button onClick={reload} disabled={busy || loading}>Повторить</button></div>}
       <section className="metrics" aria-label="Сводка перевозок"><article><span>Всего перевозок</span><strong>{shipments.length}</strong><small>В текущей демонстрации</small></article><article><span>Грузы в пути</span><strong>{shipments.filter(item => item.status === 'in_transit').length}</strong><small>Активные перевозки</small></article><article><span>Ожидают отправки</span><strong>{shipments.filter(item => item.status === 'pending').length}</strong><small>Подготовка к перевозке</small></article><article><span>Завершены</span><strong>{shipments.filter(item => item.status === 'completed').length}</strong><small>Доставка выполнена</small></article></section>
       <div className="workspace">
@@ -179,17 +179,17 @@ function App() {
               </>}
               {page === 'scenario' && <>
                 <div className="section-title"><h3>Условия из сводки</h3><span className="badge">Автоматически</span></div>
-                <p className="muted">Сервер читает наблюдения из файлов проекта и выбирает новую сводку при каждом запуске. Условия доступны только для просмотра; Gemini анализирует их вместе с историей.</p>
+                <p className="muted">Сервер читает наблюдения из файлов проекта и выбирает новую сводку при каждом запуске. Условия доступны только для просмотра; GigaChat анализирует их вместе с историей.</p>
                 {contextError && <p role="alert" className="notice">{contextError}</p>}
                 {context ? <>
                   <p className="footnote">Сводка {context.snapshot_id} · наблюдение {context.observation_id} · собрано {new Date(context.observed_at).toLocaleString('ru-RU')}</p>
                   <dl className="source-values">{Object.entries(context.conditions).map(([field, value]) => <div key={field}><dt>{({weather_severity:'Погода (0–5)', port_load:'Загрузка порта (%)', wind_speed:'Ветер (м/с)', wave_height:'Волны (м)', rail_delay:'Поезд (ч)'})[field] || field}</dt><dd>{value}</dd></div>)}</dl>
-                  {!context.provider.configured && <div className="notice">Прогноз недоступен: задайте GEMINI_API_KEY в backend/.env и перезапустите сервер.</div>}
+                  {!context.provider.configured && <div className="notice">Прогноз недоступен: задайте GIGACHAT_CREDENTIALS в backend/.env и перезапустите сервер.</div>}
                 </> : !contextError && <p>Загрузка сводки…</p>}
                 <form onSubmit={predict}>
                   <fieldset disabled={busy}><legend className="sr-only">Маршрут прогноза</legend>
                     <label>Маршрут для прогноза<select required disabled={!routes.length} value={routeId} onChange={event => setRouteId(event.target.value)}>{routes.map(route => <option key={route.route_id} value={route.route_id}>{route.name}</option>)}</select></label>
-                    <button className="primary" disabled={busy || !online || !context?.provider.configured || !routes.length}>{busy ? 'Анализ Gemini…' : 'Получить AI-прогноз'}</button>
+                    <button className="primary" disabled={busy || !online || !context?.provider.configured || !routes.length}>{busy ? 'Анализ GigaChat…' : 'Получить AI-прогноз'}</button>
                   </fieldset>
                 </form>
                 {forecast && result && <>
@@ -215,3 +215,4 @@ function App() {
   </div>
 }
 export default App
+

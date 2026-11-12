@@ -40,19 +40,19 @@
 сводки. Любое дополнительное поле в запросе (в том числе прежние погодные параметры)
 даёт 422. Неизвестный груз — 404.
 
-Пример ответа (число иллюстративное, фактический результат возвращает Gemini):
+Пример ответа (число иллюстративное, фактический результат возвращает GigaChat):
 
 ```json
 {
   "delay_hours":6.5,"risk":"high","reasons":["Высокая загрузка порта и сильный ветер"],
-  "model":"gemini-3.8-flash","model_version":"gemini-3.8-flash","method":"external_llm",
-  "prompt_version":"caspian-gemini-v2","route_id":"main","synthetic":true,
+  "model":"GigaChat-2","model_version":"GigaChat-2","method":"external_llm",
+  "prompt_version":"caspian-gigachat-v2","route_id":"main","synthetic":true,
   "source_snapshot_id":"DEMO-run-id-SCT-001",
   "conditions":{"weather_severity":4,"port_load":90,"wind_speed":17,"wave_height":2.8,"rail_delay":3}
 }
 ```
 
-`model_version` — идентификатор модели из ответа Gemini `modelVersion`, при отсутствии
+`model_version` — идентификатор модели из ответа GigaChat `model`, при отсутствии
 используется запрошенное имя. `prompt_version` — версия инструкций приложения.
 `risk`: low (<2 ч), medium (2–4 ч), high (>=4 ч). При успехе сохраняются задержка
 выбранного маршрута, `last_delay_hours` и событие с моделью и ID сводки.
@@ -67,7 +67,7 @@
 - `observed_at`: время формирования демо-сводки, ISO UTC;
 - `conditions`: weather_severity (0–5), port_load (0–100 %), wind_speed (0–100 м/с), wave_height (0–30 м), rail_delay (0–720 ч);
 - `sources`: массив `{name, kind, note}`;
-- `provider`: `{provider: "gemini", configured: boolean, model, method, prompt_version}`.
+- `provider`: `{provider: "gigachat", configured: boolean, model, method, prompt_version}`.
 
 `configured` проверяет наличие ключа, а не баланс и доступность API. Ключ не передаётся
 клиенту. Сводка читается из файлов репозитория при запуске, остаётся стабильной до
@@ -113,3 +113,4 @@ GET проверки возвращает тот же результат плю�
 | 422 | Некорректный запрос | `{error: "Invalid request payload", details: array}` |
 
 Данные и состояние демонстрационные; прогнозы, проверки и события сбрасываются после перезапуска сервера.
+
