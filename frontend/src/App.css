@@ -41,3 +41,5 @@ form label {display:block;font-size:12px;color:#6a8089;margin:0 0 18px}form labe
 @media(max-width:380px){main{padding-left:10px;padding-right:10px}.page-header h1{font-size:22px}.header-actions .primary{font-size:11px;padding:10px}.delivery-summary{grid-template-columns:.6fr 1.3fr 1fr}.delivery-summary strong{font-size:14px}.map-route-controls button{font-size:9px}.form-row{grid-template-columns:1fr}.route-map{height:360px}}
 .map-stop:focus-visible{outline:3px solid #0d8779;outline-offset:2px;border-radius:50%}
 @media(max-width:760px){.map-reset{width:44px;height:44px;min-height:44px}.route-map .leaflet-control-zoom a{width:42px;height:42px;line-height:42px!important}}
+
+body:has(dialog[open]){overflow:hidden}

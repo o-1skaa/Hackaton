@@ -157,7 +157,7 @@ function App() {
     const form = new FormData(event.currentTarget)
     try {
       const created = await api<Shipment>('/api/shipments', {name: String(form.get('name')).trim(), weight_tonnes: Number(form.get('weight')), departure_at: new Date(String(form.get('departure'))).toISOString(), conditions: {weather_severity:Number(form.get('weather')), port_load:Number(form.get('load')), rail_delay:Number(form.get('rail')), wind_speed:Number(form.get('wind')), wave_height:Number(form.get('wave'))}})
-      setShipments(await api<Shipment[]>('/api/shipments')); setSelected(created.id); setDetail(null); setRoutes([]); setForecast(null); setContext(null); setCheck(null); setDocuments([]); setEvents([]); setDetailLoading(true); setRouteId('main'); setPickerOpen(false); setPage('monitor'); setContextError(''); setCheckId(''); setAdding(false)
+      setShipments(current=>[...current,created]); setSelected(created.id); setDetail(null); setRoutes([]); setForecast(null); setContext(null); setCheck(null); setDocuments([]); setEvents([]); setDetailLoading(true); setRouteId('main'); setPickerOpen(false); setPage('monitor'); setContextError(''); setCheckId(''); setAdding(false)
     } catch(error) {setError(message(error))} finally {setBusy(false)}
   }
   async function submit(event: FormEvent) {
@@ -180,7 +180,7 @@ function App() {
   return <div className="shell">
     <aside className="sidebar">
       <a className="brand" href="/" aria-label="Smart Caspian Transit"><span className="brand-mark">sct<span>.</span></span><span>Smart Caspian</span></a>
-      <nav aria-label="Основная навигация">{pages.map(item=><button key={item.id} className={page===item.id?'nav active':'nav'} aria-current={page===item.id?'page':undefined} disabled={busy} onClick={()=>setPage(item.id)}><Icon name={item.icon}/><span>{item.title}</span></button>)}</nav>
+      <nav aria-label="Основная навигация">{pages.map(item=><button key={item.id} aria-label={item.title} title={item.title} className={page===item.id?'nav active':'nav'} aria-current={page===item.id?'page':undefined} disabled={busy} onClick={()=>setPage(item.id)}><Icon name={item.icon}/><span>{item.title}</span></button>)}</nav>
       <div className={online?'connection online':'connection'}><span/>{online?'Подключено':'Нет соединения'}</div>
     </aside>
     <main>
@@ -213,7 +213,7 @@ function App() {
               {page==='documents'&&<>
                 <h3>Документы груза</h3><p className="muted">Добавьте инвойс и упаковочный лист. Проверяется комплектность, содержимое файлов не анализируется.</p>
                 <form onSubmit={submit}><fieldset disabled={busy}>{['invoice','packing_list'].map(type=><label className="file-row" key={type}><span><Icon name="file"/>{type==='invoice'?'Инвойс':'Упаковочный лист'}</span><input key={`${selected}-${type}`} type="file" onChange={e=>{const file=e.target.files?.[0];setDocuments(current=>[...current.filter(item=>item.type!==type),...(file?[{type,filename:file.name}]:[])])}}/></label>)}<details className="form-conditions"><summary>Настройки проверки</summary><label>Ключ доступа<input type="password" autoComplete="off" value={key} onChange={e=>setKey(e.target.value)} required/></label></details><button className="primary" disabled={busy||!documents.length}>{busy?'Проверяем…':'Проверить документы'}</button></fieldset></form>
-                {check&&<div className={`result ${check.status}`} role="status"><h3>{labels[check.status]}</h3>{check.reasons.length?check.reasons.map(reason=><p key={reason}>{reason}</p>):<p>Все обязательные документы добавлены.</p>}<span className="mono">{check.check_id}</span></div>}
+                {check&&<div className={`result ${check.status}`} role="status"><h3>{labels[check.status]}</h3>{check.reasons.length?check.reasons.map(reason=><p key={reason}>{reason}</p>):<p>Все обязательные документы добавлены.</p>}<span className="mono">{check.check_id} · {check.shipment_id}</span></div>}
                 <details className="disclosure"><summary>Найти предыдущую проверку</summary><form className="lookup disclosure-content" onSubmit={lookup}><label>Номер проверки<input placeholder="CHK-…" value={checkId} onChange={e=>setCheckId(e.target.value)} required/></label><button disabled={busy||!checkId.trim()}>Найти</button></form></details>
               </>}
               {page==='events'&&<><h3>События отправки</h3>{!events.length?<div className="empty">Здесь появятся расчёты и проверки документов.</div>:<ol className="event-list">{[...events].reverse().map((event,index)=><li key={`${event.timestamp}-${index}`}><span className="event-dot"/><div><time dateTime={event.timestamp}>{date(event.timestamp)}</time><strong>{labels[event.event]??event.event}</strong><p>{event.details}</p></div></li>)}</ol>}</>}
