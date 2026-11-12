@@ -1,0 +1,54 @@
+[
+  {
+    "id": "SCT-001",
+    "name": "Контейнеры с оборудованием",
+    "origin": "Астрахань",
+    "destination": "Бендер-Аббас",
+    "status": "in_transit",
+    "historical_avg_delay_hours": 2.0,
+    "stages": [
+      {"name": "Отправление: Астрахань", "status": "completed"},
+      {"name": "Транзит: Махачкала", "status": "current"},
+      {"name": "Прибытие: Бендер-Аббас", "status": "pending"}
+    ]
+  },
+  {
+    "id": "SCT-002",
+    "name": "Промышленное сырьё",
+    "origin": "Астрахань",
+    "destination": "Бендер-Аббас",
+    "status": "in_transit",
+    "historical_avg_delay_hours": 4.5,
+    "stages": [
+      {"name": "Отправление: Астрахань", "status": "completed"},
+      {"name": "Транзит: Махачкала", "status": "current"},
+      {"name": "Прибытие: Бендер-Аббас", "status": "pending"}
+    ]
+  },
+  {
+    "id": "SCT-003",
+    "name": "Комплектующие для производства",
+    "origin": "Астрахань",
+    "destination": "Бендер-Аббас",
+    "status": "pending",
+    "historical_avg_delay_hours": 1.0,
+    "stages": [
+      {"name": "Отправление: Астрахань", "status": "current"},
+      {"name": "Транзит: Махачкала", "status": "pending"},
+      {"name": "Прибытие: Бендер-Аббас", "status": "pending"}
+    ]
+  },
+  {
+    "id": "SCT-004",
+    "name": "Продовольственные товары",
+    "origin": "Астрахань",
+    "destination": "Бендер-Аббас",
+    "status": "in_transit",
+    "historical_avg_delay_hours": 3.0,
+    "stages": [
+      {"name": "Отправление: Астрахань", "status": "completed"},
+      {"name": "Транзит: Махачкала", "status": "current"},
+      {"name": "Прибытие: Бендер-Аббас", "status": "pending"}
+    ]
+  }
+]
