@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from './services/api'
 import type { Shipment, Detail, Route, Event, Prediction, Check, PredictionContext } from './services/api'
@@ -8,35 +8,58 @@ import './App.css'
 
 const labels: Record<string, string> = {pending:'Ожидает', in_transit:'В пути', completed:'Завершён', not_submitted:'Не отправлены', submitted:'Отправлены', approved:'Приняты', rejected:'Отклонены', low:'Низкий', medium:'Средний', high:'Высокий', prediction_updated:'Обновлён прогноз'}
 const pages = [
-  { id: 'monitor', title: 'Мониторинг', hint: 'Этапы, ETA и маршруты', icon: '▦' },
-  { id: 'scenario', title: 'Прогноз', hint: 'История, условия и стыковки', icon: '↗' },
-  { id: 'sources', title: 'Источники', hint: 'Сводки и происхождение данных', icon: '◈' },
-  { id: 'documents', title: 'Документы', hint: 'Проверка комплектности', icon: '▤' },
-  { id: 'events', title: 'Журнал', hint: 'События выбранного груза', icon: '◷' },
+  { id: 'monitor', title: 'Перевозки', icon: 'box' },
+  { id: 'documents', title: 'Документы', icon: 'file' },
+  { id: 'events', title: 'Журнал', icon: 'history' },
 ] as const
 const message = (error: unknown) => error instanceof Error ? error.message : 'Не удалось выполнить запрос'
 const hours = (value: number) => `${value.toLocaleString('ru-RU', {maximumFractionDigits: 1})} ч`
-type Forecast = {result: Prediction; request: Record<string, string | number>; baseline: Route[]}
-
-function RouteComparison({routes, baseline, selected, onSelect}: {routes: Route[]; baseline?: Route[]; selected: string; onSelect: (id: string) => void}) {
-  return <div className="route-grid">{routes.map(route => {
-    const before = baseline?.find(item => item.route_id === route.route_id)
-    const delta = before ? Math.round((route.eta_hours - before.eta_hours) * 10) / 10 : null
-    return <article className={route.recommended ? 'route recommended' : 'route'} key={route.route_id}>
-      <span className="badge">{route.recommended ? 'Рекомендуемый' : 'Альтернативный'}</span>
-      <h3>{route.name}</h3><dl>
-        <div><dt>Расстояние</dt><dd>{route.distance_km.toLocaleString('ru-RU')} км</dd></div>
-        <div><dt>ETA / длительность</dt><dd>{hours(route.eta_hours)}</dd></div>
-        {before && <div><dt>До расчёта</dt><dd>{hours(before.eta_hours)}</dd></div>}
-        {delta !== null && <div><dt>Изменение ETA</dt><dd>{delta > 0 ? '+' : ''}{hours(delta)}</dd></div>}
-        <div><dt>Прибытие</dt><dd>{new Date(route.eta_at).toLocaleString('ru-RU')}</dd></div><div><dt>Выбросы CO₂e</dt><dd>{route.co2_kg.toLocaleString('ru-RU')} кг</dd></div>
-      </dl><p>{route.reason}</p><p>{route.transfer.applicable ? <>Поезд прибывает через {hours(route.transfer.actual_train_arrival_hours)}. {route.transfer.missed_ferry ? 'Плановый паром пропущен.' : 'Плановый паром доступен.'} Отправление парома через {hours(route.transfer.ferry_departure_hours)}, ожидание после подготовки {hours(route.transfer.wait_hours)}. Изменение ETA: +{hours(route.transfer.delay_hours)}.</> : <>Сухопутный маршрут через Баку. ETA включает опоздание поезда и прогноз обработки терминала.</>}</p><details><summary>Участки и расчёт CO₂e</summary><table><thead><tr><th>Участок</th><th>км</th><th>кг CO₂e</th></tr></thead><tbody>{route.legs.map((leg, i) => <tr key={i}><td>{leg.stops.join(' → ')} ({({rail:'ж/д',ferry:'паром',road:'авто'})[leg.mode]})</td><td>{leg.distance_km}</td><td>{leg.co2_kg}</td></tr>)}</tbody></table><p className="footnote">CO₂e = расстояние × масса груза × коэффициент транспорта. Коэффициенты модели: ж/д 0,022, паром 0,016, авто 0,08 кг/т·км. Геометрия схематичная.</p></details><button type="button" aria-pressed={selected === route.route_id} onClick={() => onSelect(route.route_id)}>{selected === route.route_id ? 'Выбран на карте' : 'Показать на карте'}</button>
-    </article>
-  })}</div>
+const number = (n:number) => n.toLocaleString('ru-RU', {maximumFractionDigits:1})
+const date = (s:string) => new Date(s).toLocaleString('ru-RU', {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})
+const icons:Record<string,string> = {
+  box:'M12 3 3 8v9l9 5 9-5V8l-9-5ZM3 8l9 5 9-5M12 13v9M7.5 5.5l9 5',
+  file:'M14 3H5v18h14V8l-5-5ZM14 3v5h5M8 12h8M8 16h6',
+  history:'M3 11a9 9 0 1 1 2.7 7M3 4v7h7M12 7v5l3 2',
+  plus:'M12 5v14M5 12h14',refresh:'M20 7v5h-5M4 17v-5h5M5.5 8a7 7 0 0 1 12-2L20 9M4 15l2.5 3a7 7 0 0 0 12-2',
+  arrow:'M4 12h16M14 6l6 6-6 6',close:'m6 6 12 12M6 18 18 6',chevron:'m7 10 5 5 5-5',
+}
+function Icon({name}:{name:string}) {
+  return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={icons[name]||icons.box}/></svg>
+}
+type Forecast = {results:Prediction[]; baseline:Route[]}
+function ShipmentDialog({busy,onClose,onSave,error}:{busy:boolean;onClose:()=>void;onSave:(e:FormEvent<HTMLFormElement>)=>void;error:string}) {
+  const ref=useRef<HTMLDialogElement>(null)
+  useEffect(()=>{const previous=document.activeElement as HTMLElement|null;ref.current?.showModal();return()=>previous?.focus()},[])
+  const [now]=useState(()=>new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16))
+  return <dialog ref={ref} className="shipment-dialog" aria-labelledby="new-shipment-title" onCancel={e=>{e.preventDefault();if(!busy)onClose()}}>
+    <div className="dialog-heading"><h2 id="new-shipment-title">Новая отправка</h2><button type="button" className="icon-button" onClick={onClose} disabled={busy} aria-label="Закрыть"><Icon name="close"/></button></div>
+    <p className="dialog-direction">Астрахань <Icon name="arrow"/> Бендер-Аббас</p>
+    {error&&<p role="alert" className="error">{error}</p>}
+    <form onSubmit={onSave}><fieldset disabled={busy}>
+      <label>Название груза<input name="name" placeholder="Например, оборудование" required maxLength={120} autoFocus/></label>
+      <div className="form-row"><label>Масса, т<input name="weight" type="number" min="0.01" max="10000" step="0.01" defaultValue="20" required/></label><label>Дата и время отправления<input name="departure" type="datetime-local" defaultValue={now} required/></label></div>
+      <details className="form-conditions"><summary>Условия перевозки</summary><div className="form-row">{[
+        {name:'weather',label:'Погода, 0–5',max:5,value:3},{name:'load',label:'Загрузка порта, %',max:100,value:70},
+        {name:'rail',label:'Опоздание поезда, ч',max:720,value:4},{name:'wind',label:'Ветер, м/с',max:100,value:10},{name:'wave',label:'Волны, м',max:30,value:1},
+      ].map(field=><label key={field.name}>{field.label}<input name={field.name} type="number" min="0" max={field.max} step="0.1" defaultValue={field.value} required/></label>)}</div></details>
+      <div className="dialog-actions"><button type="button" onClick={onClose}>Отмена</button><button className="primary" type="submit">{busy?'Сохраняем…':'Добавить отправку'}</button></div>
+    </fieldset></form>
+  </dialog>
+}
+function RouteDetails({route,baseline}:{route:Route;baseline?:Route}) {
+  return <div>
+    {route.transfer.applicable&&route.transfer.missed_ferry&&<div className="transfer-alert"><span className="transfer-icon">!</span><div><strong>Паром пропущен · срок сдвинут на {hours(route.transfer.delay_hours)}</strong><p>Следующий рейс через {hours(route.transfer.wait_hours)} после подготовки груза.</p></div></div>}
+    <details className="disclosure"><summary>Этапы и стыковка</summary><div className="disclosure-content">
+      {route.transfer.applicable?<ol className="connection-steps"><li><span>1</span><div>Прибытие поезда<strong>Через {hours(route.transfer.actual_train_arrival_hours)} от отправления</strong></div></li><li><span>2</span><div>{route.transfer.missed_ferry?'Плановый паром пропущен':'Посадка на плановый паром'}<strong>Отправление парома на {number(route.transfer.ferry_departure_hours)}-м часу</strong></div></li><li><span>3</span><div>Доставка<strong>{date(route.eta_at)}</strong></div></li></ol>:<p>Железная дорога до Баку, далее автотранспорт. Паром на этом маршруте не нужен.</p>}
+      {baseline&&<p className="muted">Срок до расчёта: {hours(baseline.eta_hours)}. Сейчас: {hours(route.eta_hours)}.</p>}
+    </div></details>
+    <details className="disclosure"><summary>Расстояния и выбросы</summary><div className="disclosure-content table-scroll"><table><thead><tr><th>Участок</th><th>км</th><th>кг CO₂e</th></tr></thead><tbody>{route.legs.map((leg,i)=><tr key={i}><td>{leg.stops[0]} → {leg.stops.at(-1)}<small>{({rail:'Железная дорога',ferry:'Паром',road:'Автотранспорт'})[leg.mode]}</small></td><td>{number(leg.distance_km)}</td><td>{number(leg.co2_kg)}</td></tr>)}</tbody></table><p className="muted">Выбросы = расстояние × масса × коэффициент транспорта. Геометрия и коэффициенты учебные.</p></div></details>
+  </div>
 }
 
 function App() {
   const [adding, setAdding] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [shipments, setShipments] = useState<Shipment[]>([])
   const [selected, setSelected] = useState('')
   const [detail, setDetail] = useState<Detail | null>(null)
@@ -101,7 +124,9 @@ function App() {
   }, [selected, revision])
 
   function chooseShipment(id: string) {
-    if (id === selected || busy) return
+    if (busy) return
+    setPickerOpen(false)
+    if(id===selected)return
     setRouteId('main'); setContext(null); setContextError(''); setDetail(null); setRoutes([]); setEvents([]); setForecast(null); setCheck(null); setCheckId(''); setDocuments([]); setError(''); setDetailLoading(true); setSelected(id)
   }
   function reload() {
@@ -116,22 +141,23 @@ function App() {
     ])
     setDetail(d); setRoutes(r); setEvents(e); setContext(c); setContextError('')
   }
-  async function predict(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setError('')
+  async function predict() {
+    setBusy(true);setError('')
+    const baseline=[...routes];const results:Prediction[]=[]
     try {
-      const request = buildPredictionRequest(selected, routeId)
-      const result = validatePrediction(await api<Prediction>('/api/predict', request))
-      setForecast({result, request, baseline: [...routes]}); setRoutes([])
-      setDetail(current => current && {...current, last_delay_hours: result.delay_hours})
-      try {await refreshDetail()} catch (error) {setError(`Прогноз сохранён, но ETA и журнал не обновлены. ${message(error)}`)}
-    } catch (error) {setError(message(error))} finally {setBusy(false)}
+      for(const route of routes) results.push(validatePrediction(await api<Prediction>('/api/predict',buildPredictionRequest(selected,route.route_id))))
+      setForecast({results,baseline});await refreshDetail()
+    } catch(error) {
+      setError(message(error))
+      if(results.length){setForecast({results,baseline});try{await refreshDetail()}catch{ /* Keep the initial error. */ }}
+    } finally {setBusy(false)}
   }
   async function addShipment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setBusy(true); setError('')
     const form = new FormData(event.currentTarget)
     try {
       const created = await api<Shipment>('/api/shipments', {name: String(form.get('name')).trim(), weight_tonnes: Number(form.get('weight')), departure_at: new Date(String(form.get('departure'))).toISOString(), conditions: {weather_severity:Number(form.get('weather')), port_load:Number(form.get('load')), rail_delay:Number(form.get('rail')), wind_speed:Number(form.get('wind')), wave_height:Number(form.get('wave'))}})
-      setShipments(await api<Shipment[]>('/api/shipments')); setSelected(created.id); setDetail(null); setRoutes([]); setForecast(null); setContext(null); setCheck(null); setDocuments([]); setEvents([]); setDetailLoading(true); setAdding(false)
+      setShipments(await api<Shipment[]>('/api/shipments')); setSelected(created.id); setDetail(null); setRoutes([]); setForecast(null); setContext(null); setCheck(null); setDocuments([]); setEvents([]); setDetailLoading(true); setRouteId('main'); setPickerOpen(false); setPage('monitor'); setContextError(''); setCheckId(''); setAdding(false)
     } catch(error) {setError(message(error))} finally {setBusy(false)}
   }
   async function submit(event: FormEvent) {
@@ -147,78 +173,56 @@ function App() {
   }
   const visible = shipments.filter(item => (filter === 'all' || item.status === filter) && `${item.id} ${item.name} ${item.origin} ${item.destination}`.toLowerCase().includes(search.toLowerCase()))
   const currentPage = pages.find(item => item.id === page)!
-  const changed = forecast && forecast.request.route_id !== routeId
-  const result = forecast?.result
+  const route=routes.find(item=>item.route_id===routeId)
+  const result=forecast?.results.find(item=>item.route_id===routeId)
+  const metrics=forecast?.results[0]?.metrics
 
   return <div className="shell">
     <aside className="sidebar">
-      <a className="brand" href="/" aria-label="Smart Caspian Transit"><span className="brand-mark">C</span><span>SMART CASPIAN<small>TRANSIT / OPERATIONS</small></span></a>
-      <div className="nav-caption">УПРАВЛЕНИЕ КОРИДОРОМ</div>
-      <nav aria-label="Основная навигация">{pages.map((item, index) => <button key={item.id} className={page === item.id ? 'nav active' : 'nav'} aria-current={page === item.id ? 'page' : undefined} onClick={() => setPage(item.id)}><span aria-hidden="true">{item.icon}</span><span className="nav-label">{item.title}<small>{item.hint}</small></span><span className="nav-number">0{index + 1}</span></button>)}</nav>
-      <div className="sidebar-context"><span className="nav-caption">В РАБОТЕ</span><strong>{selected || 'Груз не выбран'}</strong><p>{detail ? `${detail.origin} → ${detail.destination}` : 'Выберите перевозку в списке'}</p><small>Разделы открываются для этого груза</small></div>
-
-      <div className="sidebar-bottom"><span className="demo-dot"/> Демонстрационная среда<small>Каспийский транспортный коридор</small></div>
+      <a className="brand" href="/" aria-label="Smart Caspian Transit"><span className="brand-mark">sct<span>.</span></span><span>Smart Caspian</span></a>
+      <nav aria-label="Основная навигация">{pages.map(item=><button key={item.id} className={page===item.id?'nav active':'nav'} aria-current={page===item.id?'page':undefined} disabled={busy} onClick={()=>setPage(item.id)}><Icon name={item.icon}/><span>{item.title}</span></button>)}</nav>
+      <div className={online?'connection online':'connection'}><span/>{online?'Подключено':'Нет соединения'}</div>
     </aside>
     <main>
-      <header><div><span className="eyebrow">ЦЕНТР УПРАВЛЕНИЯ ПЕРЕВОЗКАМИ</span><h1>{currentPage.title}</h1><p className="page-subtitle">{currentPage.hint}</p></div><div className="header-actions"><span className={online ? 'connection online' : 'connection'}>{online ? '● API подключён' : '○ Нет соединения'}</span><button onClick={reload} disabled={busy || loading}>Обновить ↻</button></div></header>
-      <p className="footnote">История и исходные сводки синтетические. Расчёты маршрутов и выбросов оценочные.</p>
-      {error && <div role="alert" className="error"><span>{error}</span><button onClick={reload} disabled={busy || loading}>Повторить</button></div>}
-      <section className="metrics" aria-label="Сводка перевозок"><article><span>Всего перевозок</span><strong>{shipments.length}</strong><small>В текущей демонстрации</small></article><article><span>Грузы в пути</span><strong>{shipments.filter(item => item.status === 'in_transit').length}</strong><small>Активные перевозки</small></article><article><span>Ожидают отправки</span><strong>{shipments.filter(item => item.status === 'pending').length}</strong><small>Подготовка к перевозке</small></article><article><span>Завершены</span><strong>{shipments.filter(item => item.status === 'completed').length}</strong><small>Доставка выполнена</small></article></section>
-      <section className="panel add-shipment"><button type="button" onClick={() => setAdding(!adding)} disabled={busy}>+ Добавить отправку</button>{adding && <form onSubmit={addShipment}><fieldset disabled={busy}><legend>Новая отправка · Астрахань — Бендер-Аббас</legend><div className="shipment-fields"><label>Груз<input name="name" required maxLength={120}/></label><label>Масса, т<input name="weight" type="number" min="0.01" max="10000" step="0.01" defaultValue="20" required/></label><label>Отправление<input name="departure" type="datetime-local" required/></label>{[{name:'weather',label:'Погода, 0–5',max:5,value:3},{name:'load',label:'Загрузка порта, %',max:100,value:70},{name:'rail',label:'Опоздание поезда, ч',max:720,value:4},{name:'wind',label:'Ветер, м/с',max:100,value:10},{name:'wave',label:'Волны, м',max:30,value:1}].map(field => <label key={field.name}>{field.label}<input name={field.name} type="number" min="0" max={field.max} step="0.1" defaultValue={field.value} required/></label>)}</div><button className="primary">{busy ? 'Сохраняем…' : 'Сохранить отправку'}</button></fieldset></form>}</section>
+      <header className="page-header"><h1>{currentPage.title}</h1><div className="header-actions"><button className="icon-button" onClick={reload} disabled={busy||loading} aria-label="Обновить данные" title="Обновить"><Icon name="refresh"/></button><button className="primary" onClick={()=>{setError('');setAdding(true)}} disabled={busy}><Icon name="plus"/>Новая отправка</button></div></header>
+      {error&&!adding&&<div role="alert" className="error">{error}<button onClick={reload} disabled={busy||loading}>Повторить</button></div>}
+      <div className="fleet-summary"><span><b>{shipments.length}</b> отправок</span><span><i className="status-dot"/><b>{shipments.filter(item=>item.status==='in_transit').length}</b> в пути</span><span><b>{shipments.filter(item=>item.status==='pending').length}</b> ожидают</span></div>
       <div className="workspace">
-        <section className="panel shipments"><div className="panel-heading"><h2>Перевозки</h2><span>{visible.length} из {shipments.length}</span></div><label className="sr-only" htmlFor="search">Поиск груза</label><input id="search" placeholder="Номер, груз или направление…" value={search} onChange={event => setSearch(event.target.value)}/><label className="sr-only" htmlFor="status">Статус перевозки</label><select id="status" value={filter} onChange={event => setFilter(event.target.value)}><option value="all">Все статусы</option>{['pending', 'in_transit', 'completed'].map(status => <option key={status} value={status}>{labels[status]}</option>)}</select><div className="shipment-list">{loading && <p className="empty">Загрузка перевозок…</p>}{!loading && !visible.length && <p className="empty">Грузы не найдены.</p>}{visible.map(item => <button disabled={busy || loading} key={item.id} aria-pressed={selected === item.id} className={`shipment ${selected === item.id ? 'selected' : ''}`} onClick={() => chooseShipment(item.id)}><div><span className="mono">{item.id}</span><span className={`badge ${item.status}`}>{labels[item.status]}</span></div><h3>{item.name}</h3><p>{item.origin} <span>→</span> {item.destination}</p></button>)}</div></section>
-        <section className="panel detail" aria-label={`${currentPage.title}: ${selected || 'груз не выбран'}`}>
-          {!detail ? <div className="empty">{loading || detailLoading ? 'Загрузка карточки…' : selected ? 'Не удалось загрузить карточку. Нажмите «Обновить», чтобы повторить.' : 'Выберите перевозку'}</div> : <>
-            <div className="detail-heading"><div><span className="eyebrow">{detail.id} / {currentPage.title.toUpperCase()}</span><h2>{detail.name}</h2><p>{detail.origin} <span className="arrow">→</span> {detail.destination}</p></div><span className={`badge ${detail.status}`}>{labels[detail.status]}</span></div>
+        <section className={`panel shipments ${pickerOpen?'picker-open':''}`} aria-label="Список отправок">
+          <button className="shipment-toggle" aria-expanded={pickerOpen} aria-controls="shipment-picker" onClick={()=>setPickerOpen(!pickerOpen)}><span><Icon name="box"/>{detail?.name||'Выбрать отправку'}</span><Icon name="chevron"/></button>
+          <div id="shipment-picker" className="shipment-picker"><div className="panel-heading"><h2>Отправки</h2><span>{visible.length}</span></div>
+            <label className="sr-only" htmlFor="search">Поиск отправки</label><input id="search" placeholder="Найти отправку…" value={search} onChange={e=>setSearch(e.target.value)}/>
+            <label className="sr-only" htmlFor="status">Статус отправки</label><select id="status" value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">Все статусы</option>{['pending','in_transit','completed'].map(status=><option key={status} value={status}>{labels[status]}</option>)}</select>
+            <div className="shipment-list">{loading?<p className="empty">Загружаем отправки…</p>:!visible.length?<p className="empty">Ничего не найдено</p>:visible.map(item=><button disabled={busy||loading} key={item.id} aria-pressed={selected===item.id} className={`shipment ${selected===item.id?'selected':''}`} onClick={()=>chooseShipment(item.id)}><div><span className="mono">{item.id}</span><span className={`badge ${item.status}`}>{labels[item.status]}</span></div><h3>{item.name}</h3><p>{item.origin}<Icon name="arrow"/>{item.destination}</p></button>)}</div>
+          </div>
+        </section>
+        <section className="panel detail" aria-label={`${currentPage.title}: ${selected||'отправка не выбрана'}`} aria-busy={detailLoading||busy}>
+          {!detail?<div className="empty">{loading||detailLoading?'Загружаем перевозку…':selected?'Не удалось загрузить отправку':'Добавьте первую отправку'}</div>:<>
+            <div className="detail-heading"><div><div className="shipment-meta"><span className="mono">{detail.id}</span><span className={`badge ${detail.status}`}>{labels[detail.status]}</span></div><h2>{detail.name}</h2><p>{detail.origin}<Icon name="arrow"/>{detail.destination}<span className="shipment-weight">{number(detail.weight_tonnes)} т</span></p></div>{page==='monitor'&&<button className="primary calculate" onClick={predict} disabled={busy||!online||!routes.length}>{busy?'Рассчитываем…':forecast?'Пересчитать':'Рассчитать доставку'}<Icon name="arrow"/></button>}</div>
             <div className="tab-content" key={`${selected}-${page}`}>
-              {(page === 'monitor' || page === 'scenario') && routes.length > 0 && <RouteMap routes={routes} selected={routeId} onSelect={setRouteId}/> }
-              {page === 'monitor' && <>
-                <div className="section-title"><h3>Этапы перевозки</h3><span>По данным груза</span></div><ol className="stages">{detail.stages.map((stage, index) => <li key={index} className={stage.status}><span>{stage.status === 'completed' ? '✓' : index + 1}</span><div><strong>{stage.name}</strong><small>{stage.status === 'current' ? 'Текущий этап' : stage.status === 'completed' ? 'Выполнено' : 'Ожидается'}</small></div></li>)}</ol>
-                <p className="muted">Масса: {detail.weight_tonnes.toLocaleString('ru-RU')} т · Отправление: {new Date(detail.departure_at).toLocaleString('ru-RU')}</p><div className="summary-grid"><article><span>Средняя историческая задержка</span><strong>{hours(detail.historical_avg_delay_hours)}</strong></article><article><span>Последний прогноз задержки</span><strong>{detail.last_delay_hours == null ? 'Не рассчитан' : hours(detail.last_delay_hours)}</strong></article><article><span>Комплектность документов</span><strong>{labels[detail.preclearance_status]}</strong></article></div>
-                <div className="section-title"><h3>Маршруты и ETA</h3><span>{detail.last_delay_hours == null ? 'До расчёта задержки' : 'С учётом последнего прогноза'}</span></div>
-                {routes.length ? <RouteComparison routes={routes} selected={routeId} onSelect={setRouteId}/> : <p className="empty">{busy ? 'Обновляем ETA…' : 'Маршруты недоступны. Обновите данные.'}</p>}
-                <p className="footnote">ETA показан как длительность в часах. Маршруты и CO₂e — модельные оценки; до прогноза маршрут показывает базовый ETA. Линии на карте схематичные, без GPS и дорожного роутинга.</p>
-              </>}
-              {page === 'sources' && <>
-                <div className="section-title"><h3>Демонстрационные сводки</h3><span className="badge">Синтетические данные</span></div>
-                <p className="muted">Имитация сбора данных из файлов проекта: при каждом запуске сервера выбирается новая сводка. До следующего запуска значения стабильны. Реальные сайты и метеосервисы не опрашиваются.</p>
-                {contextError && <p role="alert" className="notice">{contextError}</p>}
-                {context ? <><p className="mono">{context.snapshot_id} · {new Date(context.observed_at).toLocaleString('ru-RU')}</p>
-                  <div className="source-grid">{context.sources.map(source => <article key={source.kind}><h3>{source.name}</h3><p>{source.note}</p></article>)}</div>
-                  <dl className="source-values">{Object.entries(context.conditions).map(([field, value]) => <div key={field}><dt>{({weather_severity:'Погода (0–5)', port_load:'Загрузка порта (%)', wind_speed:'Ветер (м/с)', wave_height:'Волны (м)', rail_delay:'Поезд (ч)'})[field] || field}</dt><dd>{value}</dd></div>)}</dl>
-                  <p className="footnote">История: 200 синтетических наблюдений по погодной оценке, загрузке порта и фактической задержке. История не содержит измерений ветра, волн или разбивки по маршрутам. Погода и загрузка порта входят в прогноз. Задержка поезда влияет на стыковку. Ветер и волны показаны справочно.</p>
-                </> : !contextError && <p>Загрузка сводок…</p>}
-              </>}
-              {page === 'scenario' && <>
-                <div className="section-title"><h3>Прогноз портовой задержки</h3></div>
-                <p className="muted">Прогноз использует 8 похожих записей из обучающей части истории по погоде и загрузке порта. При одинаковых входных данных результат одинаковый.</p>
-                <form onSubmit={predict}>
-                  <fieldset disabled={busy}><legend className="sr-only">Маршрут прогноза</legend>
-                    <label>Маршрут для прогноза<select required disabled={!routes.length} value={routeId} onChange={event => setRouteId(event.target.value)}>{routes.map(route => <option key={route.route_id} value={route.route_id}>{route.name}</option>)}</select></label>
-                    <button className="primary" disabled={busy || !online || !routes.length}>{busy ? 'Рассчитываем…' : 'Рассчитать прогноз'}</button>
-                  </fieldset>
-                </form>
-                {forecast && result && <>
-                  <div className={`result ${result.risk}`} role="status"><span>Прогноз задержки обработки в порту</span><strong>{hours(result.delay_hours)}</strong><p>Риск: {labels[result.risk]}</p><ul>{result.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul><div className="model-info"><span>Метод: похожие наблюдения</span><span>Маршрут: {result.route_id === 'main' ? 'Основной' : 'Альтернативный'}</span></div></div>
-                  <dl className="source-values"><div><dt>MAE прогноза на {result.metrics.test_count} отложенных записях</dt><dd>{result.metrics.model_mae_hours.toLocaleString('ru-RU', {maximumFractionDigits:3})} ч</dd></div><div><dt>MAE простого среднего</dt><dd>{result.metrics.baseline_mae_hours.toLocaleString('ru-RU', {maximumFractionDigits:3})} ч</dd></div><div><dt>Простой средний прогноз</dt><dd>{hours(result.metrics.baseline_delay_hours)}</dd></div></dl><p className="footnote">Обучение: первые {result.metrics.train_count} строк. Проверка: последние {result.metrics.test_count}. Ошибка относится к портовой задержке на синтетической истории.</p>
-                  <p className="footnote">Прогноз для маршрута {forecast.request.route_id}. Портовая задержка рассчитана по истории. Задержка поезда и ожидание парома учитываются отдельно в ETA.</p>
-                  {changed && <p className="notice">Выбран другой маршрут. Ниже остаётся предыдущий результат — запустите прогноз заново.</p>}
-                  <div className="section-title forecast-routes"><h3>ETA после расчёта</h3><span>Сравнение с состоянием до запроса</span></div>
-                  {routes.length ? <RouteComparison routes={routes} baseline={forecast.baseline} selected={routeId} onSelect={setRouteId}/> : <p className="empty">{busy ? 'Обновляем ETA…' : 'Не удалось обновить ETA. Повторите загрузку данных.'}</p>}
+              {page==='monitor'&&<>
+                {route&&<><div className="delivery-summary"><article><span>В пути</span><strong>{hours(route.eta_hours)}</strong></article><article><span>Прибытие</span><strong>{date(route.eta_at)}</strong></article><article><span>Выбросы CO₂e</span><strong>{number(route.co2_kg)} <small>кг</small></strong></article></div>
+                  <RouteMap routes={routes} selected={routeId} onSelect={setRouteId}/>
+                  <div className="route-context"><span><i className="status-dot"/>{route.recommended?'Рекомендуемый маршрут':'Резервный маршрут'}</span><span>{number(route.distance_km)} км</span></div>
+                  {!forecast&&<p className="before-forecast">Пока без прогноза обработки груза. Нажмите «Рассчитать доставку».</p>}
+                  <RouteDetails route={route} baseline={forecast?.baseline.find(item=>item.route_id===routeId)}/>
                 </>}
+                {result&&<details className="disclosure"><summary>Прогноз и точность</summary><div className="disclosure-content"><div className="forecast-summary"><strong>{hours(result.delay_hours)}</strong><span>Задержка обработки · риск {labels[result.risk].toLowerCase()}</span></div>{result.reasons.map(reason=><p key={reason} className="muted">{reason}</p>)}{metrics&&<><dl className="data-list"><div><dt>Ошибка прогноза (MAE)</dt><dd>{metrics.model_mae_hours.toLocaleString('ru-RU')} ч</dd></div><div><dt>Ошибка простого среднего</dt><dd>{metrics.baseline_mae_hours.toLocaleString('ru-RU')} ч</dd></div></dl><p className="muted">{metrics.train_count} записей для обучения, {metrics.test_count} для проверки. История синтетическая. Ошибка относится к задержке обработки, а не полному сроку доставки.</p></>}</div></details>}
+                <details className="disclosure"><summary>Исходные данные</summary><div className="disclosure-content"><dl className="data-list"><div><dt>Отправление</dt><dd>{date(detail.departure_at)}</dd></div><div><dt>Масса</dt><dd>{number(detail.weight_tonnes)} т</dd></div>{context&&Object.entries(context.conditions).map(([field,value])=><div key={field}><dt>{({weather_severity:'Погода, 0–5',port_load:'Загрузка порта, %',wind_speed:'Ветер, м/с',wave_height:'Волны, м',rail_delay:'Опоздание поезда, ч'})[field]||field}</dt><dd>{number(value)}</dd></div>)}</dl>{contextError&&<p className="error">{contextError}</p>}<p className="muted">{context?.observation_id==='manual'?'Условия введены при добавлении отправки.':'Синтетическая сводка из файлов проекта. Погода и загрузка порта влияют на прогноз, поезд — на стыковку.'} Ветер и волны справочные.</p></div></details>
               </>}
-              {page === 'documents' && <>
-                <h3>Проверка комплектности</h3><p className="muted">Добавьте invoice и packing_list. Проверяются типы документов; файлы и их содержимое не отправляются.</p>
-                <form onSubmit={submit}><fieldset disabled={busy}><legend className="sr-only">Документы для проверки</legend><label>Демонстрационный API-ключ<input type="password" autoComplete="off" value={key} onChange={event => setKey(event.target.value)} required/></label>{['invoice', 'packing_list'].map(type => <label className="file-row" key={type}>{type === 'invoice' ? 'Инвойс (invoice)' : 'Упаковочный лист (packing_list)'}<input key={`${selected}-${type}`} type="file" onChange={event => {const file = event.target.files?.[0]; setDocuments(current => [...current.filter(item => item.type !== type), ...(file ? [{type, filename:file.name}] : [])])}}/>{documents.find(item => item.type === type) && <small>Добавлен: {documents.find(item => item.type === type)?.filename}</small>}</label>)}<button className="primary" disabled={busy || !documents.length}>{busy ? 'Проверка…' : 'Проверить документы'}</button></fieldset></form>
-                <form className="lookup" onSubmit={lookup}><label>Открыть проверку по ID<input placeholder="CHK-…" value={checkId} onChange={event => setCheckId(event.target.value)} required/></label><button disabled={busy || !checkId.trim()}>Найти проверку</button></form>
-                {check && <div className={`result ${check.status}`} role="status"><span className="mono">{check.check_id} · {check.shipment_id}</span><h3>{labels[check.status]}</h3>{check.reasons.length ? check.reasons.map(reason => <p key={reason}>{reason}</p>) : <p>Обязательные типы документов присутствуют.</p>}<ul>{check.documents.map((document, index) => <li key={index}>{document.type} — {document.filename}</li>)}</ul></div>}
+              {page==='documents'&&<>
+                <h3>Документы груза</h3><p className="muted">Добавьте инвойс и упаковочный лист. Проверяется комплектность, содержимое файлов не анализируется.</p>
+                <form onSubmit={submit}><fieldset disabled={busy}>{['invoice','packing_list'].map(type=><label className="file-row" key={type}><span><Icon name="file"/>{type==='invoice'?'Инвойс':'Упаковочный лист'}</span><input key={`${selected}-${type}`} type="file" onChange={e=>{const file=e.target.files?.[0];setDocuments(current=>[...current.filter(item=>item.type!==type),...(file?[{type,filename:file.name}]:[])])}}/></label>)}<details className="form-conditions"><summary>Настройки проверки</summary><label>Ключ доступа<input type="password" autoComplete="off" value={key} onChange={e=>setKey(e.target.value)} required/></label></details><button className="primary" disabled={busy||!documents.length}>{busy?'Проверяем…':'Проверить документы'}</button></fieldset></form>
+                {check&&<div className={`result ${check.status}`} role="status"><h3>{labels[check.status]}</h3>{check.reasons.length?check.reasons.map(reason=><p key={reason}>{reason}</p>):<p>Все обязательные документы добавлены.</p>}<span className="mono">{check.check_id}</span></div>}
+                <details className="disclosure"><summary>Найти предыдущую проверку</summary><form className="lookup disclosure-content" onSubmit={lookup}><label>Номер проверки<input placeholder="CHK-…" value={checkId} onChange={e=>setCheckId(e.target.value)} required/></label><button disabled={busy||!checkId.trim()}>Найти</button></form></details>
               </>}
-              {page === 'events' && <><div className="section-title"><h3>История событий</h3><span>{events.length} событий</span></div>{!events.length ? <div className="empty">Событий пока нет. Рассчитайте прогноз или проверьте документы.</div> : <ol className="event-list">{[...events].reverse().map((event, index) => <li key={`${event.timestamp}-${index}`}><time dateTime={event.timestamp}>{new Date(event.timestamp).toLocaleString('ru-RU')}</time><strong>{labels[event.event] ?? event.event}</strong><p>{event.details}</p></li>)}</ol>}</>}
+              {page==='events'&&<><h3>События отправки</h3>{!events.length?<div className="empty">Здесь появятся расчёты и проверки документов.</div>:<ol className="event-list">{[...events].reverse().map((event,index)=><li key={`${event.timestamp}-${index}`}><span className="event-dot"/><div><time dateTime={event.timestamp}>{date(event.timestamp)}</time><strong>{labels[event.event]??event.event}</strong><p>{event.details}</p></div></li>)}</ol>}</>}
             </div>
           </>}
         </section>
-      </div><footer>SMART CASPIAN TRANSIT <span>Демонстрационный MVP / Каспийский цифровой форум 2026</span></footer>
+      </div><footer>Smart Caspian Transit <span>Учебные данные</span></footer>
     </main>
+    {adding&&<ShipmentDialog busy={busy} onClose={()=>setAdding(false)} onSave={addShipment} error={error}/>}
   </div>
 }
 export default App
