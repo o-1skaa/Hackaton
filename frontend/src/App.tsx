@@ -2,82 +2,204 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api } from './services/api'
 import type { Shipment, Detail, Route, Event, Prediction, Check } from './services/api'
+import { buildPredictionRequest, legacyCapabilities, physicalFields, readCapabilities, validatePrediction } from './services/prediction'
+import type { Capabilities, Scenario } from './services/prediction'
 import './App.css'
+
 const labels: Record<string, string> = {pending:'Ожидает', in_transit:'В пути', completed:'Завершён', not_submitted:'Не отправлены', submitted:'Отправлены', approved:'Приняты', rejected:'Отклонены', low:'Низкий', medium:'Средний', high:'Высокий', prediction_updated:'Обновлён прогноз'}
-const message = (e: unknown) => e instanceof Error ? e.message : 'Не удалось выполнить запрос'
-const tabs = ['Обзор', 'Прогноз задержки', 'Маршруты', 'Документы', 'Журнал']
+const pages = [
+  { id: 'monitor', title: 'Мониторинг', hint: 'Этапы, ETA и маршруты', icon: '▦' },
+  { id: 'scenario', title: 'Сценарии', hint: 'Условия и прогноз задержки', icon: '↗' },
+  { id: 'documents', title: 'Документы', hint: 'Проверка комплектности', icon: '▤' },
+  { id: 'events', title: 'Журнал', hint: 'События выбранного груза', icon: '◷' },
+] as const
+const initialScenario: Scenario = {weather_severity: 2, wind_speed: 8, wave_height: 1, port_load: 50, rail_delay: 0, route_id: 'main'}
+const fieldLabels: Record<string, string> = {wind_speed: 'ветер', wave_height: 'высота волн', rail_delay: 'задержка поезда', route_id: 'маршрут'}
+const message = (error: unknown) => error instanceof Error ? error.message : 'Не удалось выполнить запрос'
+const hours = (value: number) => `${value.toLocaleString('ru-RU', {maximumFractionDigits: 1})} ч`
+type Forecast = {result: Prediction; request: Record<string, string | number>; baseline: Route[]}
+
+function RouteComparison({routes, baseline}: {routes: Route[]; baseline?: Route[]}) {
+  return <div className="route-grid">{routes.map(route => {
+    const before = baseline?.find(item => item.route_id === route.route_id)
+    const delta = before ? Math.round((route.eta_hours - before.eta_hours) * 10) / 10 : null
+    return <article className={route.recommended ? 'route recommended' : 'route'} key={route.route_id}>
+      <span className="badge">{route.recommended ? 'Рекомендуемый' : 'Альтернативный'}</span>
+      <h3>{route.name}</h3><dl>
+        <div><dt>Расстояние</dt><dd>{route.distance_km.toLocaleString('ru-RU')} км</dd></div>
+        <div><dt>ETA / длительность</dt><dd>{hours(route.eta_hours)}</dd></div>
+        {before && <div><dt>До расчёта</dt><dd>{hours(before.eta_hours)}</dd></div>}
+        {delta !== null && <div><dt>Изменение ETA</dt><dd>{delta > 0 ? '+' : ''}{hours(delta)}</dd></div>}
+        <div><dt>Выбросы CO₂e</dt><dd>{route.co2_kg.toLocaleString('ru-RU')} кг</dd></div>
+      </dl><p>{route.reason}</p>
+    </article>
+  })}</div>
+}
+
 function App() {
   const [shipments, setShipments] = useState<Shipment[]>([])
   const [selected, setSelected] = useState('')
   const [detail, setDetail] = useState<Detail | null>(null)
   const [routes, setRoutes] = useState<Route[]>([])
   const [events, setEvents] = useState<Event[]>([])
-  const [tab, setTab] = useState('Обзор')
+  const [page, setPage] = useState<(typeof pages)[number]['id']>('monitor')
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [detailLoading, setDetailLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [revision, setRevision] = useState(0)
   const [online, setOnline] = useState(false)
-  const [weather, setWeather] = useState(2)
-  const [load, setLoad] = useState(50)
-  const [prediction, setPrediction] = useState<Prediction | null>(null)
+  const [scenario, setScenario] = useState<Scenario>(initialScenario)
+  const [capabilities, setCapabilities] = useState<Capabilities>(legacyCapabilities)
+  const [forecast, setForecast] = useState<Forecast | null>(null)
   const [key, setKey] = useState('demo-local-key')
   const [documents, setDocuments] = useState<{type: string; filename: string}[]>([])
   const [check, setCheck] = useState<Check | null>(null)
   const [checkId, setCheckId] = useState('')
+
   useEffect(() => {
     const controller = new AbortController()
-    Promise.all([api<Shipment[]>('/api/shipments', undefined, undefined, controller.signal), api<{status:string}>('/health', undefined, undefined, controller.signal)])
-      .then(([items]) => { setShipments(items); setSelected(current => current || items[0]?.id || ''); setOnline(true) })
-      .catch(e => { if (!controller.signal.aborted) {setError(message(e)); setOnline(false)} })
-      .finally(() => {if (!controller.signal.aborted) setLoading(false)})
+    Promise.all([
+      api<Shipment[]>('/api/shipments', undefined, undefined, controller.signal),
+      api<{status:string}>('/health', undefined, undefined, controller.signal),
+      api<unknown>('/openapi.json', undefined, undefined, controller.signal).then(readCapabilities).catch(() => legacyCapabilities),
+    ]).then(([items, , contract]) => {
+      if (controller.signal.aborted) return
+      setShipments(items); setDetailLoading(items.length > 0); setSelected(current => items.some(item => item.id === current) ? current : items[0]?.id || '')
+      setCapabilities(contract); setOnline(true)
+    }).catch(error => {
+      if (!controller.signal.aborted) {setError(message(error)); setOnline(false)}
+    }).finally(() => {if (!controller.signal.aborted) setLoading(false)})
     return () => controller.abort()
   }, [revision])
+
   useEffect(() => {
     if (!selected) return
     const controller = new AbortController()
-    Promise.all([api<Detail>(`/api/shipments/${selected}`, undefined, undefined, controller.signal), api<Route[]>(`/api/routes/${selected}`, undefined, undefined, controller.signal), api<Event[]>(`/api/shipments/${selected}/events`, undefined, undefined, controller.signal)])
-      .then(([d,r,e]) => {setDetail(d); setRoutes(r); setEvents(e)})
-      .catch(e => {if (!controller.signal.aborted) setError(message(e))})
+    Promise.all([
+      api<Detail>(`/api/shipments/${encodeURIComponent(selected)}`, undefined, undefined, controller.signal),
+      api<Route[]>(`/api/routes/${encodeURIComponent(selected)}`, undefined, undefined, controller.signal),
+      api<Event[]>(`/api/shipments/${encodeURIComponent(selected)}/events`, undefined, undefined, controller.signal),
+    ]).then(([d, r, e]) => {
+      if (controller.signal.aborted) return
+      setDetail(d); setRoutes(r); setEvents(e)
+      setScenario(current => ({...current, route_id: r.some(item => item.route_id === current.route_id) ? current.route_id : r[0]?.route_id || ''}))
+    }).catch(error => {if (!controller.signal.aborted) setError(message(error))})
+      .finally(() => {if (!controller.signal.aborted) setDetailLoading(false)})
     return () => controller.abort()
   }, [selected, revision])
+
   function chooseShipment(id: string) {
-    if (id === selected) return
-    setDetail(null); setRoutes([]); setEvents([]); setPrediction(null); setCheck(null); setCheckId(''); setDocuments([]); setError(''); setSelected(id)
+    if (id === selected || busy) return
+    setDetail(null); setRoutes([]); setEvents([]); setForecast(null); setCheck(null); setCheckId(''); setDocuments([]); setError(''); setDetailLoading(true); setSelected(id)
   }
-  function reload() { setLoading(true); setError(''); setRevision(r=>r+1) }
+  function reload() {
+    setLoading(true); setDetailLoading(Boolean(selected)); setDetail(null); setRoutes([]); setEvents([]); setForecast(null); setCheck(null); setError(''); setRevision(value => value + 1)
+  }
   async function refreshDetail() {
-    const [d,r,e] = await Promise.all([api<Detail>(`/api/shipments/${selected}`),api<Route[]>(`/api/routes/${selected}`),api<Event[]>(`/api/shipments/${selected}/events`)])
+    const [d, r, e] = await Promise.all([
+      api<Detail>(`/api/shipments/${encodeURIComponent(selected)}`),
+      api<Route[]>(`/api/routes/${encodeURIComponent(selected)}`),
+      api<Event[]>(`/api/shipments/${encodeURIComponent(selected)}/events`),
+    ])
     setDetail(d); setRoutes(r); setEvents(e)
   }
-  async function predict(e: FormEvent) {
-    e.preventDefault(); setBusy(true); setError('')
-    try {setPrediction(await api<Prediction>('/api/predict', {shipment_id:selected, weather_severity:weather, port_load:load})); await refreshDetail()} catch(e) {setError(message(e))} finally {setBusy(false)}
+  async function predict(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError('')
+    try {
+      const request = buildPredictionRequest(selected, scenario, capabilities)
+      const result = validatePrediction(await api<Prediction>('/api/predict', request))
+      setForecast({result, request, baseline: [...routes]}); setRoutes([])
+      setDetail(current => current && {...current, last_delay_hours: result.delay_hours})
+      try {await refreshDetail()} catch (error) {setError(`Прогноз сохранён, но ETA и журнал не обновлены. ${message(error)}`)}
+    } catch (error) {setError(message(error))} finally {setBusy(false)}
   }
-  async function submit(e: FormEvent) {
-    e.preventDefault(); setBusy(true); setError('')
-    try {const result = await api<Check>('/api/preclearance', {shipment_id:selected, documents}, key); setCheckId(result.check_id); setCheck(await api<Check>(`/api/preclearance/${result.check_id}`)); await refreshDetail()} catch(e) {setError(message(e))} finally {setBusy(false)}
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError(''); setCheck(null)
+    try {
+      const result = await api<Check>('/api/preclearance', {shipment_id:selected, documents}, key)
+      setCheckId(result.check_id); setCheck(await api<Check>(`/api/preclearance/${result.check_id}`)); await refreshDetail()
+    } catch (error) {setError(message(error))} finally {setBusy(false)}
   }
-  async function lookup(e: FormEvent) {
-    e.preventDefault(); setBusy(true); setError(''); setCheck(null)
-    try {setCheck(await api<Check>(`/api/preclearance/${encodeURIComponent(checkId.trim())}`))} catch(e) {setError(message(e))} finally {setBusy(false)}
+  async function lookup(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError(''); setCheck(null)
+    try {setCheck(await api<Check>(`/api/preclearance/${encodeURIComponent(checkId.trim())}`))} catch (error) {setError(message(error))} finally {setBusy(false)}
   }
-  const visible = shipments.filter(s => (filter === 'all' || s.status === filter) && `${s.id} ${s.name} ${s.origin} ${s.destination}`.toLowerCase().includes(search.toLowerCase()))
+  function updateScenario(field: keyof Scenario, value: string | number) {setScenario(current => ({...current, [field]: value}))}
+  const supports = (field: string) => capabilities.fields.includes(field)
+  const missing = physicalFields.filter(field => !supports(field))
+  const unsupportedRequired = capabilities.required.filter(field => !['shipment_id', ...Object.keys(initialScenario)].includes(field))
+  const visible = shipments.filter(item => (filter === 'all' || item.status === filter) && `${item.id} ${item.name} ${item.origin} ${item.destination}`.toLowerCase().includes(search.toLowerCase()))
+  const currentPage = pages.find(item => item.id === page)!
+  const changed = forecast && Object.entries(forecast.request).some(([field, value]) => field !== 'shipment_id' && scenario[field as keyof Scenario] !== value)
+  const result = forecast?.result
+
   return <div className="shell">
-    <aside className="sidebar"><a className="brand" href="/" aria-label="Smart Caspian Transit"><span className="brand-mark">C</span><span>SMART CASPIAN<small>TRANSIT / OPERATIONS</small></span></a><div className="nav-caption">РАБОЧЕЕ ПРОСТРАНСТВО</div>{tabs.map((t,i)=><button key={t} className={tab===t?'nav active':'nav'} onClick={()=>setTab(t)}><span>{['▦','↗','⇄','▤','◷'][i]}</span>{t}</button>)}<div className="sidebar-bottom"><span className="demo-dot"/> Демонстрационная среда<small>Каспийский транспортный коридор</small></div></aside>
-    <main><header><div><span className="eyebrow">ЛОГИСТИЧЕСКАЯ ПЛАТФОРМА</span><h1>Центр управления перевозками</h1></div><div className="header-actions"><span className={online?'connection online':'connection'}>{online?'● API подключён':'○ Нет соединения'}</span><button onClick={reload} disabled={busy || loading}>Обновить ↻</button></div></header>
-    <div className="demo-banner">ДЕМО <span>Синтетические данные · прогноз и проверка комплектности для демонстрации · состояние сбрасывается при перезапуске.</span></div>
-    {error && <div role="alert" className="error">{error}<button onClick={reload}>Повторить</button></div>}
-    <section className="metrics"><article><span>Всего перевозок</span><strong>{shipments.length}</strong><small>В текущей демонстрации</small></article><article><span>Грузы в пути</span><strong>{shipments.filter(s=>s.status==='in_transit').length}</strong><small>Активные перевозки</small></article><article><span>Ожидают отправки</span><strong>{shipments.filter(s=>s.status==='pending').length}</strong><small>Подготовка к перевозке</small></article><article><span>Завершены</span><strong>{shipments.filter(s=>s.status==='completed').length}</strong><small>Доставка выполнена</small></article></section>
-    <div className="workspace"><section className="panel shipments"><div className="panel-heading"><h2>Перевозки</h2><span>{visible.length} из {shipments.length}</span></div><label className="sr-only" htmlFor="search">Поиск груза</label><input id="search" placeholder="Номер, груз или направление…" value={search} onChange={e=>setSearch(e.target.value)}/><label className="sr-only" htmlFor="status">Статус перевозки</label><select id="status" value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">Все статусы</option>{['pending','in_transit','completed'].map(s=><option key={s} value={s}>{labels[s]}</option>)}</select><div className="shipment-list">{loading && <p className="empty">Загрузка перевозок…</p>}{!loading && !visible.length && <p className="empty">Грузы не найдены.</p>}{visible.map(s=><button disabled={busy} key={s.id} className={`shipment ${selected===s.id?'selected':''}`} onClick={()=>chooseShipment(s.id)}><div><span className="mono">{s.id}</span><span className={`badge ${s.status}`}>{labels[s.status]}</span></div><h3>{s.name}</h3><p>{s.origin} <span>→</span> {s.destination}</p></button>)}</div></section>
-    <section className="panel detail">{!detail ? <div className="empty">{selected?'Загрузка карточки…':'Выберите перевозку'}</div> : <><div className="detail-heading"><div><span className="eyebrow">{detail.id} / КАРТОЧКА ПЕРЕВОЗКИ</span><h2>{detail.name}</h2><p>{detail.origin} <span className="arrow">→</span> {detail.destination}</p></div><span className={`badge ${detail.status}`}>{labels[detail.status]}</span></div><div className="tabs" role="tablist" aria-label="Разделы перевозки">{tabs.map(t=><button key={t} role="tab" aria-selected={t===tab} onClick={()=>setTab(t)}>{t}</button>)}</div><div className="tab-content">
-    {tab==='Обзор' && <><div className="section-title"><h3>Этапы перевозки</h3><span>По данным груза</span></div><ol className="stages">{detail.stages.map((s,i)=><li key={i} className={s.status}><span>{s.status==='completed'?'✓':i+1}</span><div><strong>{s.name}</strong><small>{s.status==='current'?'Текущий этап':s.status==='completed'?'Выполнено':'Ожидается'}</small></div></li>)}</ol><div className="summary-grid"><article><span>Средняя историческая задержка</span><strong>{detail.historical_avg_delay_hours} ч</strong></article><article><span>Последний прогноз задержки</span><strong>{detail.last_delay_hours===null?'Не рассчитан':`${detail.last_delay_hours} ч`}</strong></article><article><span>Комплектность документов</span><strong>{labels[detail.preclearance_status]}</strong></article></div><button className="primary" onClick={()=>setTab('Прогноз задержки')}>Рассчитать прогноз →</button></>}
-    {tab==='Прогноз задержки' && <><h3>Условия перевозки</h3><p className="muted">Задайте сценарий. Погодные данные вводятся вручную.</p><form onSubmit={predict}><label>Сложность погоды <b>{weather} / 5</b><input type="range" min="0" max="5" step="0.1" value={weather} onChange={e=>setWeather(Number(e.target.value))}/></label><div className="range-labels"><span>Благоприятная</span><span>Экстремальная</span></div><label>Загрузка порта <b>{load}%</b><input type="range" min="0" max="100" value={load} onChange={e=>setLoad(Number(e.target.value))}/></label><button className="primary" disabled={busy}>{busy?'Расчёт…':'Рассчитать задержку'}</button></form>{prediction && <div className={`result ${prediction.risk}`} role="status"><span>Прогноз задержки</span><strong>{prediction.delay_hours} ч</strong><p>Риск: {labels[prediction.risk]}</p><ul>{prediction.reasons.map(r=><li key={r}>{r}</li>)}</ul></div>}<p className="footnote">Прогноз обновляет ETA маршрутов и сохраняется в журнале.</p></>}
-    {tab==='Маршруты' && <><div className="section-title"><h3>Сравнение маршрутов</h3><span>Задержка учтена в ETA</span></div>{!routes.length && <p>Нет доступных маршрутов.</p>}<div className="route-grid">{routes.map(r=><article className={r.recommended?'route recommended':'route'} key={r.route_id}><span className="badge">{r.recommended?'Рекомендуемый':'Альтернативный'}</span><h3>{r.name}</h3><dl><div><dt>Расстояние</dt><dd>{r.distance_km.toLocaleString('ru-RU')} км</dd></div><div><dt>ETA / длительность</dt><dd>{r.eta_hours} ч</dd></div><div><dt>Выбросы CO₂e</dt><dd>{r.co2_kg} кг</dd></div></dl><p>{r.reason}</p></article>)}</div><p className="footnote">Маршруты и выбросы — модельные оценки. Сервис не отслеживает GPS.</p></>}
-    {tab==='Документы' && <><h3>Проверка комплектности</h3><p className="muted">Добавьте invoice и packing_list. Проверяются типы документов; файлы и их содержимое не отправляются.</p><form onSubmit={submit}><label>Демонстрационный API-ключ<input type="password" autoComplete="off" value={key} onChange={e=>setKey(e.target.value)} required/></label>{['invoice','packing_list'].map(type=><label className="file-row" key={type}>{type==='invoice'?'Инвойс (invoice)':'Упаковочный лист (packing_list)'}<input key={`${selected}-${type}`} type="file" onChange={e=>{const file=e.target.files?.[0]; setDocuments(d=>[...d.filter(x=>x.type!==type), ...(file?[{type,filename:file.name}]:[])])}}/></label>)}<button className="primary" disabled={busy || !documents.length}>{busy?'Проверка…':'Проверить документы'}</button></form><form className="lookup" onSubmit={lookup}><label>Открыть проверку по ID<input placeholder="CHK-…" value={checkId} onChange={e=>setCheckId(e.target.value)} required/></label><button disabled={busy || !checkId.trim()}>Найти проверку</button></form>{check && <div className={`result ${check.status}`} role="status"><span className="mono">{check.check_id} · {check.shipment_id}</span><h3>{labels[check.status]}</h3>{check.reasons.length?check.reasons.map(r=><p key={r}>{r}</p>):<p>Обязательные типы документов присутствуют.</p>}<ul>{check.documents.map((d,i)=><li key={i}>{d.type} — {d.filename}</li>)}</ul></div>}</>}
-    {tab==='Журнал' && <><div className="section-title"><h3>История событий</h3><span>{events.length} событий</span></div>{!events.length?<div className="empty">Событий пока нет. Рассчитайте прогноз или проверьте документы.</div>:<ol className="event-list">{[...events].reverse().map((e,i)=><li key={`${e.timestamp}-${i}`}><time dateTime={e.timestamp}>{new Date(e.timestamp).toLocaleString('ru-RU')}</time><strong>{labels[e.event] ?? e.event}</strong><p>{e.details}</p></li>)}</ol>}</>}
-    </div></>}</section></div><footer>SMART CASPIAN TRANSIT <span>Демонстрационный MVP / Каспийский цифровой форум 2026</span></footer></main></div>
+    <aside className="sidebar">
+      <a className="brand" href="/" aria-label="Smart Caspian Transit"><span className="brand-mark">C</span><span>SMART CASPIAN<small>TRANSIT / OPERATIONS</small></span></a>
+      <div className="nav-caption">РАБОЧЕЕ ПРОСТРАНСТВО</div>
+      <nav aria-label="Основная навигация">{pages.map((item, index) => <button key={item.id} className={page === item.id ? 'nav active' : 'nav'} aria-current={page === item.id ? 'page' : undefined} onClick={() => setPage(item.id)}><span aria-hidden="true">{item.icon}</span><span className="nav-label">{item.title}<small>{item.hint}</small></span><span className="nav-number">0{index + 1}</span></button>)}</nav>
+      <div className="sidebar-context"><span className="nav-caption">В РАБОТЕ</span><strong>{selected || 'Груз не выбран'}</strong><p>{detail ? `${detail.origin} → ${detail.destination}` : 'Выберите перевозку в списке'}</p><small>Разделы открываются для этого груза</small></div>
+      <div className="sidebar-bottom"><span className="demo-dot"/> Демонстрационная среда<small>Каспийский транспортный коридор</small></div>
+    </aside>
+    <main>
+      <header><div><span className="eyebrow">ЦЕНТР УПРАВЛЕНИЯ ПЕРЕВОЗКАМИ</span><h1>{currentPage.title}</h1><p className="page-subtitle">{currentPage.hint}</p></div><div className="header-actions"><span className={online ? 'connection online' : 'connection'}>{online ? '● API подключён' : '○ Нет соединения'}</span><button onClick={reload} disabled={busy || loading}>Обновить ↻</button></div></header>
+      <div className="demo-banner">ДЕМО <span>Синтетические грузы и история · погодные условия задаются вручную · состояние сбрасывается при перезапуске.</span></div>
+      {error && <div role="alert" className="error"><span>{error}</span><button onClick={reload} disabled={busy || loading}>Повторить</button></div>}
+      <section className="metrics" aria-label="Сводка перевозок"><article><span>Всего перевозок</span><strong>{shipments.length}</strong><small>В текущей демонстрации</small></article><article><span>Грузы в пути</span><strong>{shipments.filter(item => item.status === 'in_transit').length}</strong><small>Активные перевозки</small></article><article><span>Ожидают отправки</span><strong>{shipments.filter(item => item.status === 'pending').length}</strong><small>Подготовка к перевозке</small></article><article><span>Завершены</span><strong>{shipments.filter(item => item.status === 'completed').length}</strong><small>Доставка выполнена</small></article></section>
+      <div className="workspace">
+        <section className="panel shipments"><div className="panel-heading"><h2>Перевозки</h2><span>{visible.length} из {shipments.length}</span></div><label className="sr-only" htmlFor="search">Поиск груза</label><input id="search" placeholder="Номер, груз или направление…" value={search} onChange={event => setSearch(event.target.value)}/><label className="sr-only" htmlFor="status">Статус перевозки</label><select id="status" value={filter} onChange={event => setFilter(event.target.value)}><option value="all">Все статусы</option>{['pending', 'in_transit', 'completed'].map(status => <option key={status} value={status}>{labels[status]}</option>)}</select><div className="shipment-list">{loading && <p className="empty">Загрузка перевозок…</p>}{!loading && !visible.length && <p className="empty">Грузы не найдены.</p>}{visible.map(item => <button disabled={busy || loading} key={item.id} aria-pressed={selected === item.id} className={`shipment ${selected === item.id ? 'selected' : ''}`} onClick={() => chooseShipment(item.id)}><div><span className="mono">{item.id}</span><span className={`badge ${item.status}`}>{labels[item.status]}</span></div><h3>{item.name}</h3><p>{item.origin} <span>→</span> {item.destination}</p></button>)}</div></section>
+        <section className="panel detail" aria-label={`${currentPage.title}: ${selected || 'груз не выбран'}`}>
+          {!detail ? <div className="empty">{loading || detailLoading ? 'Загрузка карточки…' : selected ? 'Не удалось загрузить карточку. Нажмите «Обновить», чтобы повторить.' : 'Выберите перевозку'}</div> : <>
+            <div className="detail-heading"><div><span className="eyebrow">{detail.id} / {currentPage.title.toUpperCase()}</span><h2>{detail.name}</h2><p>{detail.origin} <span className="arrow">→</span> {detail.destination}</p></div><span className={`badge ${detail.status}`}>{labels[detail.status]}</span></div>
+            <div className="tab-content" key={`${selected}-${page}`}>
+              {page === 'monitor' && <>
+                <div className="section-title"><h3>Этапы перевозки</h3><span>По данным груза</span></div><ol className="stages">{detail.stages.map((stage, index) => <li key={index} className={stage.status}><span>{stage.status === 'completed' ? '✓' : index + 1}</span><div><strong>{stage.name}</strong><small>{stage.status === 'current' ? 'Текущий этап' : stage.status === 'completed' ? 'Выполнено' : 'Ожидается'}</small></div></li>)}</ol>
+                <div className="summary-grid"><article><span>Средняя историческая задержка</span><strong>{hours(detail.historical_avg_delay_hours)}</strong></article><article><span>Последний прогноз задержки</span><strong>{detail.last_delay_hours == null ? 'Не рассчитан' : hours(detail.last_delay_hours)}</strong></article><article><span>Комплектность документов</span><strong>{labels[detail.preclearance_status]}</strong></article></div>
+                <div className="section-title"><h3>Маршруты и ETA</h3><span>{detail.last_delay_hours == null ? 'До расчёта задержки' : 'С учётом последнего прогноза'}</span></div>
+                {routes.length ? <RouteComparison routes={routes}/> : <p className="empty">{busy ? 'Обновляем ETA…' : 'Маршруты недоступны. Обновите данные.'}</p>}
+                <p className="footnote">ETA показан как длительность в часах. Маршруты и CO₂e — модельные оценки; GPS и календарное время прибытия сервер не передаёт.</p>
+              </>}
+              {page === 'scenario' && <>
+                <div className="section-title"><h3>Условия перевозки</h3><span className="badge">{missing.length ? 'Базовый API' : 'Расширенный API'}</span></div>
+                <p className="muted">Измените условия и запустите расчёт. Результат сохраняется для выбранного груза и обновляет длительности маршрутов.</p>
+                {(!capabilities.verified || missing.length > 0) && <div className="notice" role="status">{!capabilities.verified ? 'Контракт API недоступен. Используется прежний запрос: погодная оценка и загрузка порта. ' : ''}{missing.length > 0 && <>Сервер пока не принимает: {missing.map(field => fieldLabels[field]).join(', ')}. Эти поля отключены и не участвуют в расчёте. Обученная модель текущим контрактом не подтверждена.</>}</div>}
+                {unsupportedRequired.length > 0 && <div className="notice">Контракт требует новые поля: {unsupportedRequired.join(', ')}. Для расчёта нужно обновить интерфейс.</div>}
+                <form onSubmit={predict}>
+                  <fieldset disabled={busy}><legend className="sr-only">Параметры сценария</legend>
+                    <div className="scenario-grid">
+                      <label>Скорость ветра, м/с<input type="number" min="0" step="0.1" required disabled={!supports('wind_speed')} value={Number.isFinite(scenario.wind_speed) ? scenario.wind_speed : ''} onChange={event => updateScenario('wind_speed', event.target.valueAsNumber)}/></label>
+                      <label>Высота волн, м<input type="number" min="0" step="0.1" required disabled={!supports('wave_height')} value={Number.isFinite(scenario.wave_height) ? scenario.wave_height : ''} onChange={event => updateScenario('wave_height', event.target.valueAsNumber)}/></label>
+                      <label>Задержка поезда, ч<input type="number" min="0" step="0.1" required disabled={!supports('rail_delay')} value={Number.isFinite(scenario.rail_delay) ? scenario.rail_delay : ''} onChange={event => updateScenario('rail_delay', event.target.valueAsNumber)}/></label>
+                      <label>Маршрут для прогноза<select required disabled={!supports('route_id') || !routes.length} value={scenario.route_id} onChange={event => updateScenario('route_id', event.target.value)}>{routes.map(route => <option key={route.route_id} value={route.route_id}>{route.name}</option>)}</select></label>
+                    </div>
+                    {supports('weather_severity') && <><label>Погодная оценка <b>{scenario.weather_severity} / 5</b><input type="range" min="0" max="5" step="0.1" value={scenario.weather_severity} onChange={event => updateScenario('weather_severity', Number(event.target.value))}/></label><div className="range-labels"><span>Благоприятная</span><span>Экстремальная</span></div></>}
+                    <label>Загрузка порта <b>{scenario.port_load}%</b><input type="range" min="0" max="100" value={scenario.port_load} onChange={event => updateScenario('port_load', Number(event.target.value))}/></label>
+                    <button className="primary" disabled={busy || !online || unsupportedRequired.length > 0 || (capabilities.required.includes('route_id') && !routes.length)}>{busy ? 'Расчёт…' : 'Рассчитать сценарий'}</button>
+                  </fieldset>
+                </form>
+                {forecast && result && <>
+                  <div className={`result ${result.risk}`} role="status"><span>Прогноз дополнительной задержки</span><strong>{hours(result.delay_hours)}</strong><p>Риск: {labels[result.risk]}</p><ul>{result.reasons.map((reason, index) => <li key={index}>{reason}</li>)}</ul><div className="model-info"><span>Модель: {result.model || 'не указана сервером'}</span><span>Метод: {result.method || 'не указан сервером'}</span><span>Версия: {result.model_version || 'не указана'}</span></div></div>
+                  <p className="footnote">Рассчитано для: {Object.entries(forecast.request).filter(([field]) => field !== 'shipment_id').map(([field, value]) => `${({weather_severity:'погодная оценка', port_load:'загрузка порта', ...fieldLabels})[field] || field}: ${value}`).join(' · ')}</p>
+                  {changed && <p className="notice">Условия изменены. Ниже остаётся результат предыдущего расчёта — запустите сценарий заново.</p>}
+                  <div className="section-title forecast-routes"><h3>ETA после расчёта</h3><span>Сравнение с состоянием до запроса</span></div>
+                  {routes.length ? <RouteComparison routes={routes} baseline={forecast.baseline}/> : <p className="empty">{busy ? 'Обновляем ETA…' : 'Не удалось обновить ETA. Повторите загрузку данных.'}</p>}
+                </>}
+              </>}
+              {page === 'documents' && <>
+                <h3>Проверка комплектности</h3><p className="muted">Добавьте invoice и packing_list. Проверяются типы документов; файлы и их содержимое не отправляются.</p>
+                <form onSubmit={submit}><fieldset disabled={busy}><legend className="sr-only">Документы для проверки</legend><label>Демонстрационный API-ключ<input type="password" autoComplete="off" value={key} onChange={event => setKey(event.target.value)} required/></label>{['invoice', 'packing_list'].map(type => <label className="file-row" key={type}>{type === 'invoice' ? 'Инвойс (invoice)' : 'Упаковочный лист (packing_list)'}<input key={`${selected}-${type}`} type="file" onChange={event => {const file = event.target.files?.[0]; setDocuments(current => [...current.filter(item => item.type !== type), ...(file ? [{type, filename:file.name}] : [])])}}/>{documents.find(item => item.type === type) && <small>Добавлен: {documents.find(item => item.type === type)?.filename}</small>}</label>)}<button className="primary" disabled={busy || !documents.length}>{busy ? 'Проверка…' : 'Проверить документы'}</button></fieldset></form>
+                <form className="lookup" onSubmit={lookup}><label>Открыть проверку по ID<input placeholder="CHK-…" value={checkId} onChange={event => setCheckId(event.target.value)} required/></label><button disabled={busy || !checkId.trim()}>Найти проверку</button></form>
+                {check && <div className={`result ${check.status}`} role="status"><span className="mono">{check.check_id} · {check.shipment_id}</span><h3>{labels[check.status]}</h3>{check.reasons.length ? check.reasons.map(reason => <p key={reason}>{reason}</p>) : <p>Обязательные типы документов присутствуют.</p>}<ul>{check.documents.map((document, index) => <li key={index}>{document.type} — {document.filename}</li>)}</ul></div>}
+              </>}
+              {page === 'events' && <><div className="section-title"><h3>История событий</h3><span>{events.length} событий</span></div>{!events.length ? <div className="empty">Событий пока нет. Рассчитайте прогноз или проверьте документы.</div> : <ol className="event-list">{[...events].reverse().map((event, index) => <li key={`${event.timestamp}-${index}`}><time dateTime={event.timestamp}>{new Date(event.timestamp).toLocaleString('ru-RU')}</time><strong>{labels[event.event] ?? event.event}</strong><p>{event.details}</p></li>)}</ol>}</>}
+            </div>
+          </>}
+        </section>
+      </div><footer>SMART CASPIAN TRANSIT <span>Демонстрационный MVP / Каспийский цифровой форум 2026</span></footer>
+    </main>
+  </div>
 }
 export default App
