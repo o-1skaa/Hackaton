@@ -1,3 +1,4 @@
+import json
 import pytest
 from fastapi.testclient import TestClient
 import app.main as main
@@ -55,8 +56,12 @@ def test_preclearance_approved_and_events(client):
         {"type": "invoice", "filename": "invoice.txt"},
         {"type": "packing_list", "filename": "packing.txt"},
     ]}
+    for doc in payload['documents']:
+        doc['content'] = json.dumps(dict(shipment_id='SCT-001',weight_tonnes=20,document_number=doc['type']))
     response = client.post("/api/preclearance", json=payload, headers={"X-API-Key": "test-only-key"})
     assert response.status_code == 200
+    assert response.json()['status'] == 'verified'
+    response = client.post(f"/api/preclearance/{response.json()['check_id']}/submit",headers={"X-API-Key": "test-only-key"})
     assert response.json()["status"] == "approved"
     check_id = response.json()["check_id"]
     assert client.get(f"/api/preclearance/{check_id}").json()["status"] == "approved"
@@ -115,7 +120,9 @@ def test_preclearance_latest_status_and_document_normalization(client):
         {"type": "PACKING_LIST", "filename": "packing.txt"},
     ]}
     headers = {"X-API-Key": "test-only-key"}
-    assert client.post("/api/preclearance", json=payload, headers=headers).json()["status"] == "approved"
+    for doc in payload['documents']:
+        doc['content'] = json.dumps(dict(shipment_id='SCT-001',weight_tonnes=20,document_number=doc['type']))
+    assert client.post("/api/preclearance", json=payload, headers=headers).json()["status"] == "verified"
     payload["documents"].pop()
     assert client.post("/api/preclearance", json=payload, headers=headers).json()["status"] == "rejected"
     assert client.get("/api/shipments/SCT-001").json()["preclearance_status"] == "rejected"

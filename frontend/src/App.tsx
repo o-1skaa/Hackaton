@@ -4,9 +4,11 @@ import { api } from './services/api'
 import type { Shipment, Detail, Route, Event, Prediction, Check, PredictionContext } from './services/api'
 import { buildPredictionRequest, validatePrediction } from './services/prediction'
 import { RouteMap } from './RouteMap'
+import { OperationsPanel } from './OperationsPanel'
+import type { Operations } from './services/api'
 import './App.css'
 
-const labels: Record<string, string> = {pending:'Ожидает', in_transit:'В пути', completed:'Завершён', not_submitted:'Не отправлены', submitted:'Отправлены', approved:'Приняты', rejected:'Отклонены', low:'Низкий', medium:'Средний', high:'Высокий', prediction_updated:'Обновлён прогноз'}
+const labels: Record<string, string> = {pending:'Ожидает', in_transit:'В пути', completed:'Завершён', not_submitted:'Не отправлены', submitted:'Отправлены', verified:'Проверено', approved:'Pre-clearance пройдено (демо)', route_applied:'Применён маршрут', error:'Ошибка', rejected:'Отклонены', low:'Низкий', medium:'Средний', high:'Высокий', prediction_updated:'Обновлён прогноз'}
 const pages = [
   { id: 'monitor', title: 'Перевозки', icon: 'box' },
   { id: 'documents', title: 'Документы', icon: 'file' },
@@ -58,6 +60,8 @@ function RouteDetails({route,baseline}:{route:Route;baseline?:Route}) {
 }
 
 function App() {
+  const [operations, setOperations] = useState<Operations|null>(null)
+  const [notice, setNotice] = useState('')
   const [adding, setAdding] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [shipments, setShipments] = useState<Shipment[]>([])
@@ -79,7 +83,7 @@ function App() {
   const [contextError, setContextError] = useState('')
   const [forecast, setForecast] = useState<Forecast | null>(null)
   const [key, setKey] = useState('demo-local-key')
-  const [documents, setDocuments] = useState<{type: string; filename: string}[]>([])
+  const [documents, setDocuments] = useState<{type: string; filename: string; content:string}[]>([])
   const [check, setCheck] = useState<Check | null>(null)
   const [checkId, setCheckId] = useState('')
 
@@ -103,12 +107,16 @@ function App() {
     const controller = new AbortController()
     Promise.all([
       api<Detail>(`/api/shipments/${encodeURIComponent(selected)}`, undefined, undefined, controller.signal),
-      api<Route[]>(`/api/routes/${encodeURIComponent(selected)}`, undefined, undefined, controller.signal),
-      api<Event[]>(`/api/shipments/${encodeURIComponent(selected)}/events`, undefined, undefined, controller.signal),
-    ]).then(([d, r, e]) => {
+      api<Operations>(`/api/shipments/${encodeURIComponent(selected)}/operations`, undefined, undefined, controller.signal),
+            api<Event[]>(`/api/shipments/${encodeURIComponent(selected)}/events`, undefined, undefined, controller.signal),
+    ]).then(async ([d, o, e]) => {
       if (controller.signal.aborted) return
-      setDetail(d); setRoutes(r); setEvents(e)
-      setRouteId(current => r.some(item => item.route_id === current) ? current : r[0]?.route_id || '')
+      setDetail(d); setOperations(o); setRoutes(o.routes); setEvents(e)
+      setRouteId(o.twin.route_id)
+      if(d.latest_check_id){
+        const saved=await api<Check>(`/api/preclearance/${d.latest_check_id}`,undefined,undefined,controller.signal)
+        if(!controller.signal.aborted){setCheck(saved);setCheckId(saved.check_id)}
+      }
     }).catch(error => {if (!controller.signal.aborted) setError(message(error))})
       .finally(() => {if (!controller.signal.aborted) setDetailLoading(false)})
     return () => controller.abort()
@@ -123,23 +131,34 @@ function App() {
     return () => controller.abort()
   }, [selected, revision])
 
+  useEffect(()=>{
+    if(!selected||busy)return
+    const controller=new AbortController()
+    const timer=setInterval(()=>{
+      api<Operations>(`/api/shipments/${encodeURIComponent(selected)}/operations`,undefined,undefined,controller.signal)
+        .then(o=>{if(!controller.signal.aborted){setOperations(o);setRoutes(o.routes)}})
+        .catch(()=>{ /* Explicit refresh still reports connection failures. */ })
+    },60000)
+    return ()=>{controller.abort();clearInterval(timer)}
+  },[selected,busy])
+
   function chooseShipment(id: string) {
     if (busy) return
     setPickerOpen(false)
     if(id===selected)return
-    setRouteId('main'); setContext(null); setContextError(''); setDetail(null); setRoutes([]); setEvents([]); setForecast(null); setCheck(null); setCheckId(''); setDocuments([]); setError(''); setDetailLoading(true); setSelected(id)
+    setOperations(null); setNotice(''); setRouteId('main'); setContext(null); setContextError(''); setDetail(null); setRoutes([]); setEvents([]); setForecast(null); setCheck(null); setCheckId(''); setDocuments([]); setError(''); setDetailLoading(true); setSelected(id)
   }
   function reload() {
-    setContext(null); setContextError(''); setLoading(true); setDetailLoading(Boolean(selected)); setDetail(null); setRoutes([]); setEvents([]); setForecast(null); setCheck(null); setError(''); setRevision(value => value + 1)
+    setOperations(null); setNotice(''); setContext(null); setContextError(''); setLoading(true); setDetailLoading(Boolean(selected)); setDetail(null); setRoutes([]); setEvents([]); setForecast(null); setCheck(null); setError(''); setRevision(value => value + 1)
   }
   async function refreshDetail() {
-    const [d, r, e, c] = await Promise.all([
+    const [d, o, e, c] = await Promise.all([
       api<Detail>(`/api/shipments/${encodeURIComponent(selected)}`),
-      api<Route[]>(`/api/routes/${encodeURIComponent(selected)}`),
+      api<Operations>(`/api/shipments/${encodeURIComponent(selected)}/operations`),
       api<Event[]>(`/api/shipments/${encodeURIComponent(selected)}/events`),
       api<PredictionContext>(`/api/prediction-context/${encodeURIComponent(selected)}`),
     ])
-    setDetail(d); setRoutes(r); setEvents(e); setContext(c); setContextError('')
+    setDetail(d); setOperations(o); setRoutes(o.routes); setEvents(e); setContext(c); setContextError('')
   }
   async function predict() {
     setBusy(true);setError('')
@@ -157,8 +176,39 @@ function App() {
     const form = new FormData(event.currentTarget)
     try {
       const created = await api<Shipment>('/api/shipments', {name: String(form.get('name')).trim(), weight_tonnes: Number(form.get('weight')), departure_at: new Date(String(form.get('departure'))).toISOString(), conditions: {weather_severity:Number(form.get('weather')), port_load:Number(form.get('load')), rail_delay:Number(form.get('rail')), wind_speed:Number(form.get('wind')), wave_height:Number(form.get('wave'))}})
-      setShipments(current=>[...current,created]); setSelected(created.id); setDetail(null); setRoutes([]); setForecast(null); setContext(null); setCheck(null); setDocuments([]); setEvents([]); setDetailLoading(true); setRouteId('main'); setPickerOpen(false); setPage('monitor'); setContextError(''); setCheckId(''); setAdding(false)
+      setOperations(null); setNotice(''); setShipments(current=>[...current,created]); setSelected(created.id); setDetail(null); setRoutes([]); setForecast(null); setContext(null); setCheck(null); setDocuments([]); setEvents([]); setDetailLoading(true); setRouteId('main'); setPickerOpen(false); setPage('monitor'); setContextError(''); setCheckId(''); setAdding(false)
     } catch(error) {setError(message(error))} finally {setBusy(false)}
+  }
+  async function applyRoute() {
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const next = await api<Operations>(`/api/shipments/${encodeURIComponent(selected)}/route`,{route_id:'alternative'})
+      setOperations(next); setRoutes(next.routes); setRouteId(next.twin.route_id)
+      await refreshDetail(); setNotice('Маршрут через Баку применён. ETA и CO₂e обновлены.')
+    } catch(error) {setError(message(error))} finally {setBusy(false)}
+  }
+  async function readDocument(type:string,file?:File) {
+    setCheck(null); setCheckId(''); setError('')
+    setDocuments(current=>current.filter(item=>item.type!==type))
+    if(!file)return
+    if(file.size>100000){setError('Документ должен быть не больше 100 КБ');return}
+    setBusy(true)
+    try {
+      const content=await file.text()
+      setDocuments(current=>[...current.filter(item=>item.type!==type),{type,filename:file.name,content}])
+    } catch(error) {setError(message(error))} finally {setBusy(false)}
+  }
+  function downloadTemplate(type:string) {
+    if(!detail)return
+    const blob=new Blob([JSON.stringify({shipment_id:selected,weight_tonnes:detail.weight_tonnes,document_number:type==='invoice'?'INV-001':'PL-001'},null,2)],{type:'application/json'})
+    const url=URL.createObjectURL(blob), link=document.createElement('a')
+    link.href=url;link.download=type+'.json';link.click();URL.revokeObjectURL(url)
+  }
+  async function sendPreclearance() {
+    if(!check)return
+    setBusy(true);setError('')
+    try {setCheck(await api<Check>(`/api/preclearance/${check.check_id}/submit`,{},key));await refreshDetail()}
+    catch(error){setError(message(error))}finally{setBusy(false)}
   }
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(''); setCheck(null)
@@ -201,19 +251,23 @@ function App() {
             <div className="detail-heading"><div><div className="shipment-meta"><span className="mono">{detail.id}</span><span className={`badge ${detail.status}`}>{labels[detail.status]}</span></div><h2>{detail.name}</h2><p>{detail.origin}<Icon name="arrow"/>{detail.destination}<span className="shipment-weight">{number(detail.weight_tonnes)} т</span></p></div>{page==='monitor'&&<button className="primary calculate" onClick={predict} disabled={busy||!online||!routes.length}>{busy?'Рассчитываем…':forecast?'Пересчитать':'Рассчитать доставку'}<Icon name="arrow"/></button>}</div>
             <div className="tab-content" key={`${selected}-${page}`}>
               {page==='monitor'&&<>
-                {route&&<><div className="delivery-summary"><article><span>В пути</span><strong>{hours(route.eta_hours)}</strong></article><article><span>Прибытие</span><strong>{date(route.eta_at)}</strong></article><article><span>Выбросы CO₂e</span><strong>{number(route.co2_kg)} <small>кг</small></strong></article></div>
-                  <RouteMap routes={routes} selected={routeId} onSelect={setRouteId}/>
+                {notice&&<p className="success-notice" role="status">{notice}</p>}
+                {operations&&<OperationsPanel data={operations} busy={busy} onApply={applyRoute}/>}
+                {route&&<><div className="delivery-summary"><article><span>Полный срок маршрута</span><strong>{hours(route.eta_hours)}</strong></article><article><span>Прибытие</span><strong>{date(route.eta_at)}</strong></article><article><span>Выбросы CO₂e</span><strong>{number(route.co2_kg)} <small>кг</small></strong></article></div>
+                  <div className="section-title"><h3>Сравнение маршрутов</h3><span>{routeId===operations?.twin.route_id?'Активный маршрут':'Предпросмотр'}</span></div><RouteMap routes={routes} selected={routeId} onSelect={setRouteId}/>
                   <div className="route-context"><span><i className="status-dot"/>{route.recommended?'Рекомендуемый маршрут':'Резервный маршрут'}</span><span>{number(route.distance_km)} км</span></div>
-                  {!forecast&&<p className="before-forecast">Пока без прогноза обработки груза. Нажмите «Рассчитать доставку».</p>}
                   <RouteDetails route={route} baseline={forecast?.baseline.find(item=>item.route_id===routeId)}/>
                 </>}
                 {result&&<details className="disclosure"><summary>Прогноз и точность</summary><div className="disclosure-content"><div className="forecast-summary"><strong>{hours(result.delay_hours)}</strong><span>Задержка обработки · риск {labels[result.risk].toLowerCase()}</span></div>{result.reasons.map(reason=><p key={reason} className="muted">{reason}</p>)}{metrics&&<><dl className="data-list"><div><dt>Ошибка прогноза (MAE)</dt><dd>{metrics.model_mae_hours.toLocaleString('ru-RU')} ч</dd></div><div><dt>Ошибка простого среднего</dt><dd>{metrics.baseline_mae_hours.toLocaleString('ru-RU')} ч</dd></div></dl><p className="muted">{metrics.train_count} записей для обучения, {metrics.test_count} для проверки. История синтетическая. Ошибка относится к задержке обработки, а не полному сроку доставки.</p></>}</div></details>}
-                <details className="disclosure"><summary>Исходные данные</summary><div className="disclosure-content"><dl className="data-list"><div><dt>Отправление</dt><dd>{date(detail.departure_at)}</dd></div><div><dt>Масса</dt><dd>{number(detail.weight_tonnes)} т</dd></div>{context&&Object.entries(context.conditions).map(([field,value])=><div key={field}><dt>{({weather_severity:'Погода, 0–5',port_load:'Загрузка порта, %',wind_speed:'Ветер, м/с',wave_height:'Волны, м',rail_delay:'Опоздание поезда, ч'})[field]||field}</dt><dd>{number(value)}</dd></div>)}</dl>{contextError&&<p className="error">{contextError}</p>}<p className="muted">{context?.observation_id==='manual'?'Условия введены при добавлении отправки.':'Синтетическая сводка из файлов проекта. Погода и загрузка порта влияют на прогноз, поезд — на стыковку.'} Ветер и волны справочные.</p></div></details>
+                <details className="disclosure"><summary>Исходные данные</summary><div className="disclosure-content"><dl className="data-list"><div><dt>Отправление</dt><dd>{date(detail.departure_at)}</dd></div><div><dt>Масса</dt><dd>{number(detail.weight_tonnes)} т</dd></div>{context&&Object.entries(context.conditions).map(([field,value])=><div key={field}><dt>{({weather_severity:'Погода, 0–5',port_load:'Загрузка порта, %',wind_speed:'Ветер, м/с',wave_height:'Волны, м',rail_delay:'Опоздание поезда, ч'})[field]||field}</dt><dd>{number(value)}</dd></div>)}</dl>{contextError&&<p className="error">{contextError}</p>}<p className="muted">{context?.observation_id==='manual'?'Условия введены при добавлении отправки.':'Синтетическая сводка из файлов проекта. Погода и загрузка порта влияют на прогноз, поезд — на стыковку.'} Ветер и волны оцениваются отдельными правилами в центре рисков.</p></div></details>
               </>}
               {page==='documents'&&<>
-                <h3>Документы груза</h3><p className="muted">Добавьте инвойс и упаковочный лист. Проверяется комплектность, содержимое файлов не анализируется.</p>
-                <form onSubmit={submit}><fieldset disabled={busy}>{['invoice','packing_list'].map(type=><label className="file-row" key={type}><span><Icon name="file"/>{type==='invoice'?'Инвойс':'Упаковочный лист'}</span><input key={`${selected}-${type}`} type="file" onChange={e=>{const file=e.target.files?.[0];setDocuments(current=>[...current.filter(item=>item.type!==type),...(file?[{type,filename:file.name}]:[])])}}/></label>)}<details className="form-conditions"><summary>Настройки проверки</summary><label>Ключ доступа<input type="password" autoComplete="off" value={key} onChange={e=>setKey(e.target.value)} required/></label></details><button className="primary" disabled={busy||!documents.length}>{busy?'Проверяем…':'Проверить документы'}</button></fieldset></form>
-                {check&&<div className={`result ${check.status}`} role="status"><h3>{labels[check.status]}</h3>{check.reasons.length?check.reasons.map(reason=><p key={reason}>{reason}</p>):<p>Все обязательные документы добавлены.</p>}<span className="mono">{check.check_id} · {check.shipment_id}</span></div>}
+                <h3>Предварительное оформление</h3><p className="muted">Демонстрационная проверка содержимого JSON: номер отправки, масса в тоннах и номер документа. PDF, сканы и OCR не поддерживаются.</p>
+                <div className="document-steps"><span>1. Загрузить</span><span>2. Проверить</span><span>3. Передать</span></div>
+                <p className="muted">Последний статус: {labels[detail.preclearance_status]||detail.preclearance_status}</p>
+                <form onSubmit={submit}><fieldset disabled={busy}>{['invoice','packing_list'].map(type=><div className="document-upload" key={type}><label className="file-row"><span><Icon name="file"/>{type==='invoice'?'Инвойс':'Упаковочный лист'}</span><input key={`${selected}-${type}`} type="file" accept=".json,application/json" onChange={e=>void readDocument(type,e.target.files?.[0])}/><small>{documents.some(d=>d.type===type)?'Ожидает проверки':'Не загружен'}</small></label><button type="button" onClick={()=>downloadTemplate(type)}>Скачать образец JSON</button></div>)}<details className="form-conditions"><summary>Настройки проверки</summary><label>Ключ доступа<input type="password" autoComplete="off" value={key} onChange={e=>setKey(e.target.value)} required/></label></details><button className="primary" disabled={busy||!documents.length}>{busy?'Проверяем…':'Проверить документы'}</button></fieldset></form>
+                {check&&<div className={`result ${check.status}`} role="status"><h3>{labels[check.status]}</h3>{check.reasons.length?check.reasons.map(reason=><p key={reason}>{reason}</p>):<p>{check.status==='approved'?'Pre-clearance пройдено в демонстрационной системе.':'Все поля и масса совпадают. Пакет готов к передаче.'}</p>}{check.documents.map((doc,i)=><article className="document-result" key={`${doc.type}-${i}`}><b>{doc.filename} · {labels[doc.status]||doc.status}</b>{doc.reasons.map(reason=><p key={reason}>{reason}</p>)}</article>)}<span className="mono">{check.check_id} · {check.shipment_id}</span>{check.status==='verified'&&check.shipment_id===selected&&<button type="button" className="primary" disabled={busy} onClick={sendPreclearance}>Передать на предварительное оформление</button>}</div>}
+                <p className="muted">Это имитация процесса: пакет не передаётся в таможенные органы.</p>
                 <details className="disclosure"><summary>Найти предыдущую проверку</summary><form className="lookup disclosure-content" onSubmit={lookup}><label>Номер проверки<input placeholder="CHK-…" value={checkId} onChange={e=>setCheckId(e.target.value)} required/></label><button disabled={busy||!checkId.trim()}>Найти</button></form></details>
               </>}
               {page==='events'&&<><h3>События отправки</h3>{!events.length?<div className="empty">Здесь появятся расчёты и проверки документов.</div>:<ol className="event-list">{[...events].reverse().map((event,index)=><li key={`${event.timestamp}-${index}`}><span className="event-dot"/><div><time dateTime={event.timestamp}>{date(event.timestamp)}</time><strong>{labels[event.event]??event.event}</strong><p>{event.details}</p></div></li>)}</ol>}</>}

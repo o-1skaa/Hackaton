@@ -34,16 +34,16 @@ class PredictionContext(SourceContext):
 class Document(BaseModel):
     type: str = Field(min_length=1, description="Например: invoice, packing_list")
     filename: str = Field(min_length=1)
-    content: str | None = None  # Тестовое содержимое, необязательно
+    content: str | None = Field(default=None, max_length=100000)  # Тестовое содержимое, необязательно
 
 
 class PreclearanceRequest(BaseModel):
     shipment_id: str
-    documents: list[Document] = Field(min_length=1)
+    documents: list[Document] = Field(min_length=1, max_length=10)
 
 
 class PreclearanceResponse(BaseModel):
-    status: Literal["submitted", "approved", "rejected"]
+    status: Literal["submitted", "verified", "approved", "rejected"]
     check_id: str
     reasons: list[str]
 
@@ -72,13 +72,14 @@ class ShipmentDetail(ShipmentSummary):
     departure_at: str = "2026-11-12T00:00:00+00:00"
     historical_avg_delay_hours: float
     stages: list[Stage]
-    preclearance_status: Literal["not_submitted", "submitted", "approved", "rejected"]
+    preclearance_status: Literal["not_submitted", "submitted", "verified", "approved", "rejected"]
     last_delay_hours: float | None
+    latest_check_id: str | None = None
 
 
 class Event(BaseModel):
     timestamp: str
-    event: Literal["prediction_updated", "submitted", "approved", "rejected"]
+    event: Literal["prediction_updated", "submitted", "verified", "approved", "rejected", "route_applied"]
     details: str
 
 
@@ -99,6 +100,8 @@ class Route(BaseModel):
 class CheckedDocument(BaseModel):
     type: str
     filename: str
+    status: str
+    reasons: list[str]
 
 
 class PreclearanceCheck(PreclearanceResponse):
@@ -126,3 +129,8 @@ class ShipmentCreate(BaseModel):
     def valid_conditions(cls, value):
         from app.services.data_sources import Conditions
         return Conditions.model_validate(value).model_dump()
+
+
+class RouteApplyRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    route_id: Literal['alternative']

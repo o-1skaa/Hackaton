@@ -35,7 +35,7 @@ def calculate_routes(shipment, predicted_delays):
                          'factor_kg_per_tkm':FACTORS[mode], 'co2_kg':round(km*weight*FACTORS[mode],2)})
         transfer = connection(rail_delay, predicted_delays.get(route_id,0))
         transfer['applicable'] = route_id == 'main'
-        eta = round(sum(leg['duration_hours'] for leg in legs) + (2+transfer['delay_hours'] if route_id == 'main' else rail_delay+predicted_delays.get(route_id,0)),2)
+        eta = round(sum(leg['duration_hours'] for leg in legs) + (2+transfer['delay_hours'] if route_id == 'main' else shipment.get('route_start_offset_hours',0)+rail_delay+predicted_delays.get(route_id,0)),2)
         start = datetime.fromisoformat(shipment.get('departure_at','2026-11-12T00:00:00+00:00').replace('Z','+00:00'))
         output.append({'route_id':route_id,'name':f'Астрахань → {transit} → Энзели → Бендер-Аббас' if route_id == 'main' else 'Астрахань → Баку → Бендер-Аббас (сухопутный)',
             'waypoints': [point for i,leg in enumerate(legs) for point in leg['waypoints'][int(i>0):]],

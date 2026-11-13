@@ -1,3 +1,4 @@
+import json
 from fastapi.testclient import TestClient
 import app.main as main
 
@@ -22,8 +23,9 @@ def test_create_predict_transfer_documents_restart():
             assert route['eta_at'] == '2026-11-16T10:00:00+00:00'
         assert routes[1]['eta_hours'] < routes[0]['eta_hours']
         assert client.get('/api/shipments/'+key+'/events').json()
-        check = client.post('/api/preclearance',headers={'X-API-Key': main.DEMO_API_KEY},json={'shipment_id':key,'documents':[{'type':t,'filename':t+'.pdf'} for t in ['invoice','packing_list']]})
-        assert check.json()['status'] == 'approved'
+        check = client.post('/api/preclearance',headers={'X-API-Key': main.DEMO_API_KEY},json={'shipment_id':key,'documents':[{'type':t,'filename':t+'.json','content':json.dumps(dict(shipment_id=key,weight_tonnes=20,document_number=t))} for t in ['invoice','packing_list']]})
+        assert check.json()['status'] == 'verified'
+        assert client.post('/api/preclearance/'+check.json()['check_id']+'/submit',headers={'X-API-Key':main.DEMO_API_KEY}).json()['status'] == 'approved'
     main.SHIPMENTS.pop(key)
     with TestClient(main.app) as restarted:
         assert restarted.get('/api/shipments/'+key).status_code == 200

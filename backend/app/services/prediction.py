@@ -14,6 +14,7 @@ def estimate(conditions, train):
     nearest = sorted(train, key=lambda row: ((row['weather_severity']-conditions['weather_severity'])/5)**2 + ((row['port_load']-conditions['port_load'])/100)**2)[:8]
     return mean(row['actual_delay_hours'] for row in nearest)
 
+@lru_cache
 def metrics():
     train, test = history()
     baseline = mean(row['actual_delay_hours'] for row in train)
